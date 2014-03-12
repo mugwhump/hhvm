@@ -19,7 +19,6 @@
 #include "hphp/compiler/builtin_symbols.h"
 #include "hphp/compiler/code_generator.h"
 #include "hphp/compiler/analysis/analysis_result.h"
-#include "hphp/util/util.h"
 #include "hphp/util/process.h"
 #include "hphp/compiler/option.h"
 #include "hphp/util/async-func.h"
@@ -37,6 +36,8 @@
 #include <memory>
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
+#include <iterator>
 
 using namespace HPHP;
 
@@ -89,7 +90,7 @@ bool TestMessage::bodyFromStr(const String& input) {
   return true;
 }
 
-bool TestMessage::fromJson(CVarRef json) {
+bool TestMessage::fromJson(const Variant& json) {
   if (!json.isArray()) {
     printf("Invalid format of a message\n");
     return false;
@@ -163,7 +164,7 @@ bool TestMessage::fromJson(CVarRef json) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-bool TestMessageExchange::fromJson(CVarRef json) {
+bool TestMessageExchange::fromJson(const Variant& json) {
   if (json.isNull()) {
     printf("Not a valid JSON\n");
     return false;

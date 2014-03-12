@@ -24,6 +24,7 @@
 #include "hphp/runtime/base/program-functions.h"
 #include <tbb/concurrent_hash_map.h>
 #include <tbb/concurrent_queue.h>
+#include <set>
 
 namespace HPHP { namespace Eval {
 
@@ -83,7 +84,7 @@ public:
 
   // Interrupt from VM
   static void InterruptVMHook(int type = BreakPointReached,
-                              CVarRef e = null_variant);
+                              const Variant& e = null_variant);
 
   // Surround text with color, if set.
   static void SetTextColors();

@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 # Don't even pull these into the repo.
-# We want runnig the bad tests to still complete.
+# We want running the bad tests to still complete.
 no_import = (
     # these hang forever
     '/ext/standard/tests/array/array_pad_variation2.phpt',
@@ -78,7 +78,6 @@ no_import = (
     '/ext/tokenizer',
     '/ext/wddx',
     '/ext/xmlrpc',
-    '/ext/xsl',
     '/sapi',
 
     # conscious decision not to match these
@@ -155,10 +154,6 @@ bad_tests = (
     '/ext/standard/tests/network/getmxrr.php',
     '/ext/sockets/tests/socket_getpeername_ipv6loop.php',
 
-    # broken: t2991109
-    '/ext/zlib/tests/gzfile_variation5.php',
-    '/ext/zlib/tests/readgzfile_variation5.php',
-
     # broken: t3036086
     '/Zend/tests/bug55007.php',
 
@@ -170,9 +165,6 @@ bad_tests = (
 
     # flaky: t3241496
     '/ext/standard/tests/file/copy_variation16.php',
-
-    # flakey
-    '/ext/session/tests/023.php',
 
     # segfaults on contbuild in opt
     '/ext/standard/tests/strings/explode_bug.php',
@@ -187,13 +179,43 @@ bad_tests = (
     '/ext/standard/tests/file/file_exists_variation1.php',
 
     # flaky: t3552849
-    '/ext/session/tests/013.php',
-    '/ext/session/tests/014.php',
-    '/ext/session/tests/027.php',
+    '/ext/session',
+
+    # XSL
+    '/ext/xsl/tests/bug49634.php',
+    '/ext/xsl/tests/bug54446_with_ini.php',
+    '/ext/xsl/tests/xsl-phpinfo.php',
+    '/ext/xsl/tests/xslt008.php',
+    '/ext/xsl/tests/xslt009.php',
+    '/ext/xsl/tests/xsltprocessor_getParameter-wrongparam.php',
+    '/ext/xsl/tests/xsltprocessor_removeParameter-wrongparams.php',
 
     # flaky: t3619770
     '/ext/zlib/tests/gzfile_basic.php',
     '/ext/zlib/tests/readgzfile_basic.php',
+
+    # flaky: t3758194
+    '/ext/date/tests/bug36988.php',
+
+    # flaky: t3758218
+    '/ext/intl/tests/calendar_getNow_basic.php',
+
+    # flaky: t3798855
+    '/ext/standard/tests/strings/sha1_file.php',
+
+    # flaky: t3805998
+    '/ext/standard/tests/file/realpath_basic4.php',
+
+    # flaky: t3817758
+    '/ext/ftp/tests/ftp_nb_fget_basic1.php',
+
+    # flaky: t3846500
+    '/ext/standard/tests/file/copy_variation8.php',
+
+    # flaky: t3851970
+    '/ext/pcre/tests/preg_match_all_edit_basic.php',
+    '/ext/standard/tests/general_functions/bug39322.php',
+    '/ext/standard/tests/misc/time_sleep_until_basic.php',
 )
 
 # Tests that work but not in repo mode
@@ -323,6 +345,31 @@ norepo_tests = (
     '/ext/standard/tests/url/rawurlencode_variation_001.php',
     '/ext/standard/tests/url/urldecode_variation_001.php',
     '/ext/standard/tests/url/urlencode_variation_001.php',
+    '/ext/xsl/tests/bug48221.php.norepo',
+    '/ext/xsl/tests/bug54446.php.norepo',
+    '/ext/xsl/tests/xslt001.php.norepo',
+    '/ext/xsl/tests/xslt002.php.norepo',
+    '/ext/xsl/tests/xslt003.php.norepo',
+    '/ext/xsl/tests/xslt004.php.norepo',
+    '/ext/xsl/tests/xslt005.php.norepo',
+    '/ext/xsl/tests/xslt006.php.norepo',
+    '/ext/xsl/tests/xslt007.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_getParameter-invalidparam.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_getParameter.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-allfuncs.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array-multiple.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array-notallowed.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-funcnostring.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-funcundef.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-null.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string-multiple.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string-notallowed.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_removeParameter-invalidparam.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_removeParameter.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_setparameter-errorquote.php.norepo',
+    '/ext/xsl/tests/xsltprocessor_setparameter-nostring.php.norepo',
     '/ext/zip/tests/bug53579.php',
     '/ext/zip/tests/bug64342_1.php',
     '/ext/zip/tests/bug7658.php',
@@ -384,6 +431,38 @@ norepo_tests = (
     '/tests/lang/bug21961.php',
     '/tests/lang/foreachLoop.012.php',
 
+    # XSL: 'include "prepare.inc"' makes repo mode fail.
+    '/ext/xsl/tests/bug48221.php',
+    '/ext/xsl/tests/bug54446.php',
+    '/ext/xsl/tests/bug54446_with_ini.php',
+    '/ext/xsl/tests/xslt001.php',
+    '/ext/xsl/tests/xslt002.php',
+    '/ext/xsl/tests/xslt003.php',
+    '/ext/xsl/tests/xslt004.php',
+    '/ext/xsl/tests/xslt005.php',
+    '/ext/xsl/tests/xslt006.php',
+    '/ext/xsl/tests/xslt007.php',
+    '/ext/xsl/tests/xslt008.php',
+    '/ext/xsl/tests/xslt009.php',
+    '/ext/xsl/tests/xsltprocessor_getParameter-invalidparam.php',
+    '/ext/xsl/tests/xsltprocessor_getParameter.php',
+    '/ext/xsl/tests/xsltprocessor_getParameter-wrongparam.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-allfuncs.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array-multiple.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array-notallowed.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-funcnostring.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-funcundef.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-null.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string-multiple.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string-notallowed.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string.php',
+    '/ext/xsl/tests/xsltprocessor_removeParameter-invalidparam.php',
+    '/ext/xsl/tests/xsltprocessor_removeParameter.php',
+    '/ext/xsl/tests/xsltprocessor_removeParameter-wrongparams.php',
+    '/ext/xsl/tests/xsltprocessor_setparameter-errorquote.php',
+    '/ext/xsl/tests/xsltprocessor_setparameter-nostring.php',
+
     # These tests use create_function, which is basically eval.
     '/Zend/tests/anonymous_func_001.php',
     '/Zend/tests/anonymous_func_002.php',
@@ -444,9 +523,9 @@ other_files = (
     '/ext/bz2/tests/004_1.txt.bz2',
     '/ext/bz2/tests/004_2.txt.bz2',
     '/ext/calendar/tests/skipif.inc',
-    '/ext/curl/tests/responder/get.php',
     '/ext/curl/tests/curl_testdata1.txt',
     '/ext/curl/tests/curl_testdata2.txt',
+    '/ext/curl/tests/responder/get.php',
     '/ext/date/tests/DateTime_data-absolute.inc',
     '/ext/date/tests/DateTime_data-dates.inc',
     '/ext/date/tests/DateTime_data-fall-type2-type2.inc',
@@ -463,6 +542,10 @@ other_files = (
     '/ext/exif/tests/bug34704.jpg',
     '/ext/exif/tests/bug48378.jpeg',
     '/ext/exif/tests/bug60150.jpg',
+    '/ext/exif/tests/bug62523_1.jpg',
+    '/ext/exif/tests/bug62523_2.jpg',
+    '/ext/exif/tests/bug62523_3.jpg',
+    '/ext/exif/tests/exif_encoding_crash.jpg',
     '/ext/exif/tests/image007.jpg',
     '/ext/exif/tests/image008.jpg',
     '/ext/exif/tests/image009.jpg',
@@ -497,6 +580,8 @@ other_files = (
     '/ext/fileinfo/tests/resources/test.png',
     '/ext/ftp/tests/cert.pem',
     '/ext/ftp/tests/server.inc',
+    '/ext/gd/tests/Rochester-Regular.otf',
+    '/ext/gd/tests/Rochester-Regular.otf.LICENSE.txt',
     '/ext/gd/tests/Tuffy.ttf',
     '/ext/gd/tests/bug37346.gif',
     '/ext/gd/tests/bug38112.gif',
@@ -508,8 +593,8 @@ other_files = (
     '/ext/gd/tests/php.gif',
     '/ext/gd/tests/src.gd2',
     '/ext/gd/tests/src.wbmp',
-    '/ext/gd/tests/test8859.ttf',
     '/ext/gd/tests/test.png',
+    '/ext/gd/tests/test8859.ttf',
     '/ext/gettext/tests/locale/en/LC_CTYPE/dgettextTest.mo',
     '/ext/gettext/tests/locale/en/LC_CTYPE/dgettextTest.po',
     '/ext/gettext/tests/locale/en/LC_CTYPE/dgettextTest_switch.mo',
@@ -529,6 +614,8 @@ other_files = (
     '/ext/gettext/tests/locale/fi/LC_MESSAGES/messages.po',
     '/ext/intl/tests/ut_common.inc',
     '/ext/ldap/tests/connect.inc',
+    '/ext/ldap/tests/skipif.inc',
+    '/ext/ldap/tests/skipifbindfailure.inc',
     '/ext/mbstring/tests/common.inc',
     '/ext/mcrypt/tests/vectors.txt',
     '/ext/mysql/tests/connect.inc',
@@ -588,11 +675,12 @@ other_files = (
     '/ext/spl/tests/testclass.class.inc',
     '/ext/sqlite3/tests/new_db.inc',
     '/ext/sqlite3/tests/stream_test.inc',
-    '/ext/standard/tests/array/data.inc',
     '/ext/standard/tests/array/compare_function.inc',
+    '/ext/standard/tests/array/data.inc',
     '/ext/standard/tests/class_object/AutoInterface.inc',
     '/ext/standard/tests/class_object/AutoLoaded.inc',
     '/ext/standard/tests/class_object/AutoTrait.inc',
+    '/ext/standard/tests/file/bug30362.txt',
     '/ext/standard/tests/file/bug40501.csv',
     '/ext/standard/tests/file/file.inc',
     '/ext/standard/tests/file/fopen_include_path.inc',
@@ -625,15 +713,28 @@ other_files = (
     '/ext/xmlreader/tests/relaxNG.rng',
     '/ext/xmlreader/tests/relaxNG2.rng',
     '/ext/xmlreader/tests/relaxNG3.rng',
+    '/ext/xsl/tests/area_list.xsl',
+    '/ext/xsl/tests/area_name.xml',
+    '/ext/xsl/tests/bug49634.xml',
+    '/ext/xsl/tests/documentxpath.xsl',
+    '/ext/xsl/tests/exslt.xml',
+    '/ext/xsl/tests/exslt.xsl',
+    '/ext/xsl/tests/phpfunc-nostring.xsl',
+    '/ext/xsl/tests/phpfunc-undef.xsl',
+    '/ext/xsl/tests/phpfunc.xsl',
+    '/ext/xsl/tests/prepare.inc',
+    '/ext/xsl/tests/skipif.inc',
+    '/ext/xsl/tests/streamsinclude.xsl',
+    '/ext/xsl/tests/xslt011.xml',
+    '/ext/xsl/tests/xslt011.xsl',
+    '/ext/xsl/tests/xslt012.xsl',
+    '/ext/xsl/tests/xslt.xml',
+    '/ext/xsl/tests/xslt.xsl',
+    '/ext/xsl/tests/xslt.xsl.gz',
     '/ext/zlib/tests/004.txt.gz',
     '/ext/zlib/tests/data.inc',
-    '/ext/standard/tests/file/bug30362.txt',
-    '/tests/lang/include_files/eval.inc',
-    '/ext/exif/tests/exif_encoding_crash.jpg',
+    '/ext/zlib/tests/reading_include_path.inc',
     '/tests/classes/autoload_derived.p5c',
-    '/ext/exif/tests/bug62523_1.jpg',
-    '/ext/exif/tests/bug62523_2.jpg',
-    '/ext/exif/tests/bug62523_3.jpg',
     '/tests/classes/autoload_implements.p5c',
     '/tests/classes/autoload_interface.p5c',
     '/tests/classes/autoload_root.p5c',
@@ -646,6 +747,7 @@ other_files = (
     '/tests/lang/inc.inc',
     '/tests/lang/inc_throw.inc',
     '/tests/lang/include_files/echo.inc',
+    '/tests/lang/include_files/eval.inc',
     '/tests/lang/include_files/function.inc',
     '/tests/quicktester.inc',
 )
@@ -879,6 +981,12 @@ def walk(filename, dest_subdir):
         test = test.replace("1)) {\n\tunlink($file2", "2)) {\n\tunlink($file2")
     if '/ext/bz2/tests/bug51997.php' in full_dest_filename:
         test = test.replace("testfile.bz2", "bug51997.bz2")
+    if '/ext/ldap/tests/ldap_control_paged_results_variation1.php' in full_dest_filename:
+        exp = exp.replace("resource(6)", "resource(%d)")
+        file(full_dest_filename + '.expectf', 'w').write(exp)
+    if '/ext/ldap/tests/ldap_control_paged_results_variation2.php' in full_dest_filename:
+        exp = exp.replace("resource(6)", "resource(%d)")
+        file(full_dest_filename + '.expectf', 'w').write(exp)
     if '/ext/bz2/tests/with_files.php' in full_dest_filename:
         test = test.replace("testfile.bz2", "with_files.bz2")
     if ('/ext/standard/tests/math/pow.php' in full_dest_filename) or \
@@ -1043,6 +1151,10 @@ def walk(filename, dest_subdir):
         test = test.replace('rename_variation.tmp', dest_filename+'.tmp')
         test = test.replace('rename_variation2.tmp', dest_filename+'2.tmp')
         test = test.replace('rename_variation_link.tmp', dest_filename+'_link.tmp')
+    if '/ext/standard/tests/file/bug46347.php' in full_dest_filename:
+        test = test.replace('/parse.ini', '/bug46347.ini')
+    if '/ext/standard/tests/file/parse_ini_file.php' in full_dest_filename:
+        test = test.replace('/parse.ini', '/parse_ini_file.ini')
     if '/ext/mysqli/tests/' in full_dest_filename:
 
         (testname, _) = os.path.splitext(os.path.basename(full_dest_filename))
@@ -1095,7 +1207,6 @@ def walk(filename, dest_subdir):
                 '064': ['DUAL'],
                 '066': ['test_warnings'],
                 '067': [re.compile('cursor(?=(%d|\$i))')],
-                '072': ['not_exists'],
                 'bug32405': ['test_users'],
                 'bug34810': ['test_warnings'],
                 'bug34785': ['DUAL'],
@@ -1193,7 +1304,8 @@ def walk(filename, dest_subdir):
                 'mysqli_pconn_kill': ['test'],
                 'mysqli_poll_mixing_insert_select':
                     [re.compile('test(?! may)'), 'bogus'],
-                'mysqli_prepare': ['test2', re.compile('(?<!next )test(?!_)')],
+                'mysqli_prepare':
+                    [re.compile('(?<=(ISTS|FROM) )test(?!2)'), 'test2'],
                 'mysqli_query': ['test'],
                 'mysqli_query_iterators': ['test'],
                 'mysqli_query_stored_proc': ['test'],
@@ -1304,7 +1416,7 @@ def walk(filename, dest_subdir):
                     test = replace_id.sub(new_id, test)
 
         new_id = 'test_%s_table_1' % (testname, )
-        test = re.sub('(require(_once)*\([\'"](clean_)?table.inc[\'"]\))',
+        test = re.sub('(require(_once)*[ (][\'"](clean_)?table.inc[\'"]\)?)',
                       '$test_table_name = \'%s\'; \\1' % (new_id, ), test)
 
     file(full_dest_filename, 'w').write(test)

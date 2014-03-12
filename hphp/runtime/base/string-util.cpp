@@ -15,12 +15,15 @@
 */
 
 #include "hphp/runtime/base/string-util.h"
+#include <algorithm>
+#include <vector>
 #include "hphp/zend/zend-html.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/zend-url.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/container-functions.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -113,7 +116,7 @@ Variant StringUtil::Explode(const String& input, const String& delimiter,
   return ret;
 }
 
-String StringUtil::Implode(CVarRef items, const String& delim) {
+String StringUtil::Implode(const Variant& items, const String& delim) {
   if (!isContainer(items)) {
     throw_param_is_not_container();
   }
@@ -198,13 +201,13 @@ Variant StringUtil::ChunkSplit(const String& body, int chunklen /* = 76 */,
 // encoding/decoding
 
 String StringUtil::HtmlEncode(const String& input, QuoteStyle quoteStyle,
-                              const char *charset, bool nbsp) {
+                              const char *charset, bool dEncode, bool htmlEnt) {
   return HtmlEncode(input, static_cast<int64_t>(quoteStyle),
-                    charset, nbsp);
+                    charset, dEncode, htmlEnt);
 }
 
 String StringUtil::HtmlEncode(const String& input, const int64_t qsBitmask,
-                              const char *charset, bool nbsp) {
+                              const char *charset, bool dEncode, bool htmlEnt) {
   if (input.empty()) return input;
 
   assert(charset);
@@ -217,7 +220,7 @@ String StringUtil::HtmlEncode(const String& input, const int64_t qsBitmask,
 
   int len = input.size();
   char *ret = string_html_encode(input.data(), len,
-                                 qsBitmask, utf8, nbsp);
+                                 qsBitmask, utf8, dEncode, htmlEnt);
   if (!ret) {
     return empty_string;
   }

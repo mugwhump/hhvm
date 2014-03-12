@@ -47,7 +47,7 @@ template<class EDType, class MemberType>
 Arg extra(MemberType EDType::*ptr) {
   auto fun = [ptr] (const IRInstruction* inst) {
     auto const extra = inst->extra<EDType>();
-    return constToBits(extra->*ptr);
+    return Type::cns(extra->*ptr).rawVal();
   };
   return Arg(fun);
 }
@@ -191,6 +191,8 @@ static CallMap s_callMap {
                            {{SSA, 0}, {TV, 1}, {TV, 2}}},
     {AllocObj,           newInstance, DSSA, SSync,
                            {{SSA, 0}}},
+    {CustomInstanceInit, method(&ObjectData::callCustomInstanceInit),
+                           DSSA, SSync, {{SSA, 0}}},
     {LdClsCtor,          loadClassCtor, DSSA, SSync,
                            {{SSA, 0}}},
     {LookupClsRDSHandle, lookupClsRDSHandle, DSSA, SNone, {{SSA, 0}}},
@@ -210,6 +212,10 @@ static CallMap s_callMap {
     {VerifyParamCallable, VerifyParamTypeCallable, DNone, SSync,
                            {{TV, 0}, {SSA, 1}}},
     {VerifyParamFail,    VerifyParamTypeFail, DNone, SSync, {{SSA, 0}}},
+    {VerifyRetCls,       VerifyRetTypeSlow, DNone, SSync,
+                           {{SSA, 0}, {SSA, 1}, {SSA, 2}, {TV, 3}}},
+    {VerifyRetCallable,  VerifyRetTypeCallable, DNone, SSync, {{TV, 0}}},
+    {VerifyRetFail,      VerifyRetTypeFail, DNone, SSync, {{TV, 0}}},
     {RaiseUninitLoc,     raiseUndefVariable, DNone, SSync, {{SSA, 0}}},
     {RaiseWarning,       raiseWarning, DNone, SSync, {{SSA, 0}}},
     {RaiseNotice,        raiseNotice, DNone, SSync, {{SSA, 0}}},

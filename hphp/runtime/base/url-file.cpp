@@ -15,6 +15,7 @@
 */
 
 #include "hphp/runtime/base/url-file.h"
+#include <vector>
 #include "hphp/runtime/base/hphp-system.h"
 #include "hphp/runtime/base/http-client.h"
 #include "hphp/runtime/base/runtime-error.h"
@@ -30,7 +31,7 @@ const StaticString s_http_response_header("http_response_header");
 ///////////////////////////////////////////////////////////////////////////////
 
 UrlFile::UrlFile(const char *method /* = "GET" */,
-                 CArrRef headers /* = null_array */,
+                 const Array& headers /* = null_array */,
                  const String& postData /* = null_string */,
                  int maxRedirect /* = 20 */,
                  int timeout /* = -1 */) {

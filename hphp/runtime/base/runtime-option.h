@@ -24,6 +24,7 @@
 #include <set>
 
 #include <boost/container/flat_set.hpp>
+#include <memory>
 
 #include "hphp/util/hash-map-typedefs.h"
 #include "hphp/util/functional.h"
@@ -343,6 +344,8 @@ public:
   static bool EnableArgsInBacktraces;
   static bool EnableZendCompat;
   static bool TimeoutsUseWallTime;
+  static bool CheckFlushOnUserClose;
+  static bool EvalAuthoritativeMode;
 
   static int GetScannerType();
 
@@ -362,7 +365,7 @@ public:
    */                                                                   \
   F(uint32_t, VMInitialGlobalTableSize,                                 \
     kEvalVMInitialGlobalTableSizeDefault)                               \
-  F(bool, Jit,                         evalJitDefault())                \
+  F(bool, Jit,                         true)                            \
   F(bool, SimulateARM,                 simulateARMDefault())            \
   F(bool, JitRequireWriteLease,        false)                           \
   F(uint64_t, JitAHotSize,             4 << 20)                         \
@@ -372,7 +375,7 @@ public:
   F(uint64_t, JitAStubsSize,           64 << 20)                        \
   F(uint64_t, JitGlobalDataSize,       kJitGlobalDataDef)               \
   F(bool, AllowHhas,                   false)                           \
-  F(bool, CheckExtendedTypeHints,      true)                            \
+  F(bool, CheckReturnTypeHints,        false)                           \
   F(bool, JitNoGdb,                    true)                            \
   F(bool, SpinOnCrash,                 false)                           \
   F(uint32_t, DumpRingBufferOnCrash,   0)                               \
@@ -404,11 +407,12 @@ public:
                                                                         \
   F(bool, JitDisabledByHphpd,          false)                           \
   F(bool, JitTransCounters,            false)                           \
+  F(bool, HHIRBytecodeControlFlow,     false)                           \
   F(bool, HHIRCse,                     true)                            \
   F(bool, HHIRSimplification,          true)                            \
   F(bool, HHIRGenOpts,                 true)                            \
   F(bool, HHIRJumpOpts,                true)                            \
-  F(bool, HHIRRefcountOpts,            true)                            \
+  F(bool, HHIRRefcountOpts,            hhirRefcountOptsDefault())       \
   F(bool, HHIRRefcountOptsAlwaysSink,  false)                           \
   F(bool, HHIRExtraOptPass,            true)                            \
   F(uint32_t, HHIRNumFreeRegs,         64)                              \
@@ -426,13 +430,13 @@ public:
   F(bool, HHIRPredictionOpts,          true)                            \
   F(bool, HHIRStressCodegenBlocks,     false)                           \
   /* Register allocation flags */                                       \
-  F(bool, HHIRXls,                     true)                            \
   F(bool, HHIREnableCalleeSavedOpt,    true)                            \
   F(bool, HHIREnablePreColoring,       true)                            \
   F(bool, HHIREnableCoalescing,        true)                            \
   F(bool, HHIRAllocSIMDRegs,           true)                            \
   /* Region compiler flags */                                           \
   F(string,   JitRegionSelector,       regionSelectorDefault())         \
+  F(bool,     JitCompareRegions,       false)                           \
   F(bool,     JitPGO,                  pgoDefault())                    \
   F(string,   JitPGORegionSelector,    "hottrace")                      \
   F(uint64_t, JitPGOThreshold,         kDefaultJitPGOThreshold)         \

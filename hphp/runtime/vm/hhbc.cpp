@@ -24,6 +24,7 @@
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/stats.h"
+#include "hphp/util/text-util.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -651,8 +652,8 @@ void staticArrayStreamer(ArrayData* ad, std::ostream& out) {
       case KindOfStaticString:
       case KindOfString: {
         out << "\""
-            << Util::escapeStringForCPP(key.getStringData()->data(),
-                                        key.getStringData()->size())
+            << escapeStringForCPP(key.getStringData()->data(),
+                                  key.getStringData()->size())
             << "\"";
         break;
       }
@@ -674,8 +675,8 @@ void staticArrayStreamer(ArrayData* ad, std::ostream& out) {
       case KindOfStaticString:
       case KindOfString: {
         out << "\""
-            << Util::escapeStringForCPP(val.getStringData()->data(),
-                                        val.getStringData()->size())
+            << escapeStringForCPP(val.getStringData()->data(),
+                                  val.getStringData()->size())
             << "\"";
         break;
       }
@@ -796,7 +797,7 @@ MemberCode parseMemberCode(const char* s) {
 
 std::string instrToString(const Op* it, const Unit* u /* = NULL */) {
   std::stringstream out;
-  const Op* iStart = it;
+  PC iStart = reinterpret_cast<PC>(it);
   Op op = *it;
   ++it;
   switch (op) {
@@ -880,7 +881,7 @@ std::string instrToString(const Op* it, const Unit* u /* = NULL */) {
   } else if (u) {                                                 \
     const StringData* sd = u->lookupLitstrId(id);                 \
     out << sep << "\"" <<                                         \
-      Util::escapeStringForCPP(sd->data(), sd->size()) << "\"";   \
+      escapeStringForCPP(sd->data(), sd->size()) << "\"";         \
   } else {                                                        \
     out << sep << id;                                             \
   }                                                               \
@@ -898,7 +899,7 @@ std::string instrToString(const Op* it, const Unit* u /* = NULL */) {
     }                                           \
     Offset o = readData<Offset>(it);            \
     if (u != nullptr) {                         \
-      if (iStart + o == (Op*)u->entry() - 1) {  \
+      if (iStart + o == u->entry() - 1) {       \
         out << "Invalid";                       \
       } else {                                  \
         out << u->offsetOf(iStart + o);         \

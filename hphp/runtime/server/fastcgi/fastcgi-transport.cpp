@@ -23,7 +23,6 @@
 #include "thrift/lib/cpp/async/TAsyncTransport.h"
 #include "thrift/lib/cpp/async/TAsyncTimeout.h"
 #include "thrift/lib/cpp/transport/TSocketAddress.h"
-#include "hphp/util/util.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/timer.h"
 #include "folly/MoveWrapper.h"
@@ -192,11 +191,25 @@ std::string FastCGITransport::mangleHeader(const std::string& name) {
   return "HTTP_" + ret;
 }
 
+static const std::string
+  s_contentLength("CONTENT_LENGTH"),
+  s_contentType("CONTENT_TYPE");
+
 /**
  * Passed an HTTP header like "Cookie" or "Cache-Control"
  **/
 std::string FastCGITransport::getHeader(const char *name) {
-  return getRawHeader(mangleHeader(name));
+  auto *header = getRawHeaderPtr(mangleHeader(name));
+  if (header) {
+    return *header;
+  }
+  if (strcasecmp(name, "Content-Length") == 0) {
+    return getRawHeader(s_contentLength); // No HTTP_ prefix for CONTENT_LENGTH
+  }
+  if (strcasecmp(name, "Content-Type") == 0) {
+    return getRawHeader(s_contentType); // No HTTP_ prefix for CONTENT_TYPE
+  }
+  return "";
 }
 
 /**
@@ -255,7 +268,7 @@ void FastCGITransport::removeHeaderImpl(const char* name) {
   m_responseHeaders.erase(name);
 }
 
-const std::string
+static const std::string
   s_status("Status: "),
   s_colon(": "),
   s_newline("\r\n");
@@ -339,7 +352,7 @@ void FastCGITransport::onHeader(std::unique_ptr<folly::IOBuf> key_chain,
   m_requestHeaders.emplace(key, value);
 }
 
-const std::string
+static const std::string
   s_requestURI("REQUEST_URI"),
   s_remoteHost("REMOTE_HOST"),
   s_remoteAddr("REMOTE_ADDR"),
@@ -350,7 +363,6 @@ const std::string
   s_documentRoot("DOCUMENT_ROOT"),
   s_remotePort("REMOTE_PORT"),
   s_serverPort("SERVER_PORT"),
-  s_contentLength("CONTENT_LENGTH"),
   s_pathTranslated("PATH_TRANSLATED"),
   s_scriptName("SCRIPT_NAME"),
   s_scriptFilename("SCRIPT_FILENAME"),
@@ -390,14 +402,13 @@ void FastCGITransport::onHeadersComplete() {
     }
   }
 
+  // Treat everything apart from GET and HEAD as a post to be like php-src.
   if (m_extendedMethod == "GET") {
     m_method = Method::GET;
-  } else if (m_extendedMethod == "POST") {
-    m_method = Method::POST;
   } else if (m_extendedMethod == "HEAD") {
     m_method = Method::HEAD;
   } else {
-    m_method = Method::Unknown;
+    m_method = Method::POST;
   }
 
   if (m_pathTranslated.empty()) {

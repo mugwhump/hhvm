@@ -27,6 +27,7 @@
 #include "hphp/runtime/vm/jit/service-requests.h"
 #include "hphp/runtime/vm/jit/service-requests-x64.h"
 #include "hphp/runtime/vm/jit/abi-x64.h"
+#include "hphp/runtime/vm/jit/ir.h"
 
 namespace HPHP {
 struct Func;
@@ -43,7 +44,7 @@ constexpr size_t kJmpTargetAlign = 16;
 
 void moveToAlign(CodeBlock& cb, size_t alignment = kJmpTargetAlign);
 
-void emitEagerSyncPoint(Asm& as, const HPHP::Opcode* pc);
+void emitEagerSyncPoint(Asm& as, const Op* pc);
 void emitEagerVMRegSave(Asm& as, RegSaveFlags flags);
 void emitGetGContext(Asm& as, PhysReg dest);
 
@@ -108,7 +109,7 @@ inline void
 emitTLSLoad(X64Assembler& a, const ThreadLocalNoCheck<T>& datum,
             RegNumber reg) {
   uintptr_t virtualAddress = uintptr_t(&datum.m_node.m_p) - tlsBase();
-  a.    fs().load_disp32_reg64(virtualAddress, reg);
+  a.    fs().loadq(baseless(virtualAddress), r64(reg));
 }
 
 #else // USE_GCC_FAST_TLS
@@ -121,7 +122,7 @@ emitTLSLoad(X64Assembler& a, const ThreadLocalNoCheck<T>& datum,
   a.    emitImmReg(&datum.m_key, argNumToRegName[0]);
   a.    call((TCA)pthread_getspecific);
   if (reg != reg::rax) {
-    a.    mov_reg64_reg64(reg::rax, reg);
+    a.    movq(reg::rax, r64(reg));
   }
 }
 

@@ -13,30 +13,28 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-
 #include "hphp/runtime/base/socket.h"
+
+#include <fcntl.h>
+#include <poll.h>
+
+#include "hphp/runtime/base/request-event-handler.h"
+#include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/base/exceptions.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/server/server-stats.h"
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/util/logger.h"
-#include <fcntl.h>
-#include <poll.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class SocketData : public RequestEventHandler {
-public:
+struct SocketData final : RequestEventHandler {
   SocketData() : m_lastErrno(0) {}
   void clear() { m_lastErrno = 0; }
-  virtual void requestInit() {
-    clear();
-  }
-  virtual void requestShutdown() {
-    clear();
-  }
+  void requestInit() override { clear(); }
+  void requestShutdown() override { clear(); }
   int m_lastErrno;
 };
 
@@ -59,7 +57,8 @@ Socket::Socket(int sockfd, int type, const char *address /* = NULL */,
 
   struct timeval tv;
   if (timeout <= 0) {
-    tv.tv_sec = g_context->getSocketDefaultTimeout();
+    tv.tv_sec = ThreadInfo::s_threadInfo.getNoCheck()->
+      m_reqInjectionData.getSocketDefaultTimeout();
     tv.tv_usec = 0;
   } else {
     tv.tv_sec = (int)timeout;
@@ -100,6 +99,7 @@ bool Socket::open(const String& filename, const String& mode) {
 }
 
 bool Socket::close() {
+  invokeFiltersOnClose();
   return closeImpl();
 }
 
@@ -210,13 +210,13 @@ int64_t Socket::writeImpl(const char *buffer, int64_t length) {
 }
 
 bool Socket::eof() {
-  if (!m_eof && valid()) {
+  if (!m_eof && valid() && bufferedLen() == 0) {
     // Test if stream is EOF if the flag is not already set.
     // Attempt to peek at one byte from the stream, checking for:
     // i)  recv() closing gracefully, or
     // ii) recv() failed due to no waiting data on non-blocking socket.
     char ch;
-    int64_t ret = recv(m_fd, &ch, 1, MSG_PEEK);
+    int64_t ret = recv(m_fd, &ch, 1, MSG_PEEK | MSG_DONTWAIT);
     if (ret == 0 || (ret == -1 && errno != EWOULDBLOCK)) {
       m_eof = true;
     }

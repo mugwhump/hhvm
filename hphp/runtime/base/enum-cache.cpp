@@ -15,6 +15,7 @@
 */
 
 #include "hphp/runtime/base/enum-cache.h"
+#include <memory>
 
 namespace HPHP {
 
@@ -29,7 +30,7 @@ const EnumCache::EnumValues* EnumCache::getValues(
     const Class* klass,
     bool recurse) {
   if (klass->classVecLen() == 1 ||
-      !enumName->same(klass->classVec()[0]->name())) {
+      !enumName.get()->same(klass->classVec()[0]->name())) {
     std::string msg;
     msg += klass->name()->data();
     msg += " must derive from Enum";
@@ -49,7 +50,7 @@ void EnumCache::deleteValues(const Class* klass) {
   }
 }
 
-void EnumCache::failLookup(CVarRef msg) {
+void EnumCache::failLookup(const Variant& msg) {
   Object e(SystemLib::AllocExceptionObject(msg));
   throw e;
 }

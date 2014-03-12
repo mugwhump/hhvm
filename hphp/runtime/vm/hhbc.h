@@ -476,8 +476,7 @@ enum class BareThisOp : uint8_t {
   O(Double,          ONE(DA),          NOV,             ONE(CV),    NF) \
   O(String,          ONE(SA),          NOV,             ONE(CV),    NF) \
   O(Array,           ONE(AA),          NOV,             ONE(CV),    NF) \
-  O(NewArray,        NA,               NOV,             ONE(CV),    NF) \
-  O(NewArrayReserve, ONE(IVA),         NOV,             ONE(CV),    NF) \
+  O(NewArray,        ONE(IVA),         NOV,             ONE(CV),    NF) \
   O(NewPackedArray,  ONE(IVA),         CMANY,           ONE(CV),    NF) \
   O(NewStructArray,  ONE(VSA),         SMANY,           ONE(CV),    NF) \
   O(AddElemC,        NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
@@ -685,6 +684,8 @@ enum class BareThisOp : uint8_t {
   O(InterfaceExists, NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(TraitExists,     NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(VerifyParamType, ONE(IVA),         NOV,             NOV,        NF) \
+  O(VerifyRetTypeC,  NA,               ONE(CV),         ONE(CV),    NF) \
+  O(VerifyRetTypeV,  NA,               ONE(VV),         ONE(VV),    NF) \
   O(Self,            NA,               NOV,             ONE(AV),    NF) \
   O(Parent,          NA,               NOV,             ONE(AV),    NF) \
   O(LateBoundCls,    NA,               NOV,             ONE(AV),    NF) \
@@ -743,12 +744,6 @@ inline constexpr bool operator>=(Op a, Op b) {
 
 inline bool isValidOpcode(Op op) {
   return op > OpLowInvalid && op < OpHighInvalid;
-}
-
-inline Op toOp(Opcode o) {
-  Op op = Op(o);
-  assert(isValidOpcode(op));
-  return op;
 }
 
 const MInstrInfo& getMInstrInfo(Op op);
@@ -1082,10 +1077,6 @@ inline bool isSwitch(Op op) {
   }
 }
 
-inline bool isSwitch(Opcode op) {
-  return isSwitch(toOp(op));
-}
-
 template<typename Out, typename In>
 Out& readData(In*& it) {
   Out& r = *(Out*)it;
@@ -1106,9 +1097,9 @@ void foreachSwitchTarget(const Op* op, L func) {
 }
 
 template<typename L>
-void foreachSwitchString(Opcode* op, L func) {
-  assert(toOp(*op) == OpSSwitch);
-  readData<Opcode>(op);
+void foreachSwitchString(const Op* op, L func) {
+  assert(*op == Op::SSwitch);
+  readData<Op>(op);
   int32_t size = readData<int32_t>(op) - 1; // the last item is the default
   for (int i = 0; i < size; ++i) {
     func(readData<Id>(op));

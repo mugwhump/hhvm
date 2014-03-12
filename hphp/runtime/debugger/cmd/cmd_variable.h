@@ -26,7 +26,7 @@ class CmdVariable : public DebuggerCommand {
 public:
   static Array GetGlobalVariables();
   static void PrintVariable(DebuggerClient &client, const String& varName);
-  static void PrintVariables(DebuggerClient &client, CArrRef variables,
+  static void PrintVariables(DebuggerClient &client, const Array& variables,
                               int frame, const String& text, int version);
 
 public:
@@ -49,7 +49,7 @@ protected:
 private:
   int m_frame;
   Array m_variables;
-  bool m_global; // Set true by onServer if it used g_vmContext->m_globalVarEnv
+  bool m_global; // Set true by onServer if it used g_context->m_globalVarEnv
   String m_varName;
   String m_filter;
 };

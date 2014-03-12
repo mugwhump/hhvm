@@ -18,15 +18,17 @@
 #define incl_HPHP_OBJECT_DATA_H_
 
 #include "hphp/runtime/base/countable.h"
-#include "hphp/runtime/base/smart-ptr.h"
-#include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/macros.h"
 #include "hphp/runtime/base/memory-manager.h"
+#include "hphp/runtime/base/smart-ptr.h"
+#include "hphp/runtime/base/types.h"
+
 #include "hphp/runtime/vm/class.h"
 #include "hphp/runtime/vm/hhbc.h"
+
 #include "hphp/system/systemlib.h"
-#include <boost/mpl/eval_if.hpp>
-#include <boost/mpl/int.hpp>
+
+#include <vector>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -56,11 +58,12 @@ class ObjectData {
     HasClone      = 0x0100, // if IsCppBuiltin, has custom clone logic
                             // if not IsCppBuiltin, defines __clone PHP method
     CallToImpl    = 0x0200, // call o_to{Boolean,Int64,Double}Impl
-    // FreeFlag      = 0x0400, // ** a free flag **
+    HasNativeData = 0x0400, // HNI Class with <<__NativeData("T")>>
     HasDynPropArr = 0x0800, // has a dynamic properties array
     IsCppBuiltin  = 0x1000, // has custom C++ subclass
     IsCollection  = 0x2000, // it's a collection (and the specific type is
                             // stored in o_subclassData.u16)
+    InstanceDtor  = 0x1400, // HasNativeData | IsCppBuiltin
   };
 
   enum {
@@ -116,7 +119,6 @@ class ObjectData {
   bool isUncounted() const { return false; }
   IMPLEMENT_COUNTABLENF_METHODS_NO_STATIC
 
- protected:
   ~ObjectData();
  public:
 
@@ -210,11 +212,6 @@ class ObjectData {
                           : Collection::Type::InvalidType;
   }
 
-  size_t getCollectionSize() const {
-    assert(isCollection());
-    return *(uint*)((char*)this + FAST_COLLECTION_SIZE_OFFSET);
-  }
-
   bool implementsIterator() {
     return (instanceof(SystemLib::s_IteratorClass));
   }
@@ -253,7 +250,7 @@ class ObjectData {
     if (UNLIKELY(getAttribute(CallToImpl) && !isCollection())) {
       return o_toInt64Impl();
     }
-    raiseObjToIntNotice(o_getClassName().data());
+    raiseObjToIntNotice(classname_cstr());
     return 1;
   }
 
@@ -280,15 +277,15 @@ class ObjectData {
   Variant o_get(const String& s, bool error = true,
                 const String& context = null_string);
 
-  Variant o_set(const String& s, CVarRef v);
+  Variant o_set(const String& s, const Variant& v);
   Variant o_set(const String& s, RefResult v);
-  Variant o_setRef(const String& s, CVarRef v);
+  Variant o_setRef(const String& s, const Variant& v);
 
-  Variant o_set(const String& s, CVarRef v, const String& context);
+  Variant o_set(const String& s, const Variant& v, const String& context);
   Variant o_set(const String& s, RefResult v, const String& context);
-  Variant o_setRef(const String& s, CVarRef v, const String& context);
+  Variant o_setRef(const String& s, const Variant& v, const String& context);
 
-  void o_setArray(CArrRef properties);
+  void o_setArray(const Array& properties);
   void o_getArray(Array& props, bool pubOnly = false) const;
 
   static Object FromArray(ArrayData* properties);
@@ -299,7 +296,7 @@ class ObjectData {
   // invokeFuncFew(), and vm_decode_function(). We should remove these APIs
   // and migrate all callers to use invokeFunc(), invokeFuncFew(), and
   // vm_decode_function() instead.
-  Variant o_invoke(const String& s, CVarRef params, bool fatal = true);
+  Variant o_invoke(const String& s, const Variant& params, bool fatal = true);
   Variant o_invoke_few_args(const String& s, int count,
                             INVOKE_FEW_ARGS_DECL_ARGS);
 
@@ -329,9 +326,7 @@ class ObjectData {
   /*
    * Returns whether this object has any dynamic properties.
    */
-  bool hasDynProps() const {
-    return getAttribute(HasDynPropArr) ? dynPropArray().size() : false;
-  }
+  bool hasDynProps() const;
 
   /*
    * Returns the dynamic properties array for this object.
@@ -353,15 +348,7 @@ class ObjectData {
   Array& reserveProperties(int nProp = 2);
 
   // heap profiling helpers
-  void getChildren(std::vector<TypedValue*> &out) {
-    Slot nProps = m_cls->numDeclProperties();
-    for (Slot i = 0; i < nProps; ++i) {
-      out.push_back(&propVec()[i]);
-    }
-    if (UNLIKELY(getAttribute(HasDynPropArr))) {
-      dynPropArray()->getChildren(out);
-    }
-  }
+  void getChildren(std::vector<TypedValue*>& out);
 
  protected:
   TypedValue* propVec();
@@ -448,9 +435,10 @@ class ObjectData {
 
 private:
   friend struct MemoryProfile;
-  static void compileTimeAssertions() {
-    static_assert(offsetof(ObjectData, m_count) == FAST_REFCOUNT_OFFSET, "");
-  }
+
+  const char* classname_cstr() const;
+
+  static void compileTimeAssertions();
 
 private:
   Class* m_cls;

@@ -7,6 +7,7 @@
  * users to display dates in a localized format or to parse strings into PHP
  * date values using pattern strings and/or canned patterns.
  */
+<<__NativeData("IntlDateFormatter")>>
 class IntlDateFormatter {
   /**
    * Create a date formatter
@@ -56,9 +57,6 @@ class IntlDateFormatter {
       return false;
     }
   }
-
-  <<__Native>>
-  public function __clone(): void;
 
   /**
    * Format the date/time value as a string
@@ -222,7 +220,7 @@ class IntlDateFormatter {
    */
   <<__Native>>
   public function parse(string $value,
-                        mixed &$position): mixed;
+                        mixed &$position = null): mixed;
 
   /**
    * Sets the calendar type used by the formatter
@@ -531,7 +529,7 @@ function datefmt_localtime(IntlDateFormatter $fmt,
  */
 function datefmt_parse(IntlDateFormatter $fmt,
                        $value,
-                       &$position): mixed {
+                       &$position = null): mixed {
   return $fmt->parse($value, $position);
 }
 

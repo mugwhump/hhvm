@@ -29,6 +29,10 @@
 # include <libkern/OSByteOrder.h>
 #else
 # include <byteswap.h>
+#include <map>
+#include <memory>
+#include <utility>
+#include <vector>
 #endif
 
 #if !defined(htonll) && !defined(ntohll)
@@ -273,9 +277,9 @@ public:
   void read(Array   &data);
   void read(Object  &data);
   void read(Variant &data);
-  void write(CArrRef data);
-  void write(CObjRef data);
-  void write(CVarRef data);
+  void write(const Array& data);
+  void write(const Object& data);
+  void write(const Variant& data);
 
   void skip(int8_t type);
 

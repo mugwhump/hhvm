@@ -164,7 +164,7 @@ void CmdWhere::removeArgs() {
   static StaticString s_args("args");
   Array smallST;
   for (ArrayIter iter(m_stacktrace); iter; ++iter) {
-    CArrRef frame(iter.secondRef().toArray());
+    const Array& frame(iter.secondRef().toArray());
     Array smallFrame;
     for (ArrayIter iter2(frame); iter2; ++iter2) {
       if (equal(iter2.first(), s_args)) {
@@ -240,7 +240,7 @@ bool CmdWhere::onServer(DebuggerProxy &proxy) {
   if (m_type == KindOfWhereAsync) {
     m_stacktrace = createAsyncStacktrace();
   } else {
-    m_stacktrace = g_vmContext->debugBacktrace(false, true, false);
+    m_stacktrace = g_context->debugBacktrace(false, true, false);
     if (!m_stackArgs) {
       removeArgs();
     }

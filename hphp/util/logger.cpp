@@ -48,7 +48,7 @@ IMPLEMENT_LOGLEVEL(Verbose);
 
 bool Logger::UseSyslog = false;
 bool Logger::UseLogFile = true;
-bool Logger::UseCronolog = true;
+bool Logger::UseCronolog = false;
 bool Logger::IsPipeOutput = false;
 FILE *Logger::Output = nullptr;
 Cronolog Logger::cronOutput;
@@ -117,7 +117,11 @@ void Logger::Log(LogLevelType level, const std::string &msg,
 }
 
 FILE *Logger::GetStandardOut(LogLevelType level) {
-  return stderr;
+  return s_logger->m_standardOut;
+}
+
+void Logger::SetStandardOut(FILE* file) {
+  s_logger->m_standardOut = file;
 }
 
 int Logger::GetSyslogLevel(LogLevelType level) {

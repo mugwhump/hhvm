@@ -71,7 +71,7 @@ enum class KeyType {
 template<KeyType kt>
 struct KeyTypeTraits {};
 template<> struct KeyTypeTraits<KeyType::Any> {
-  typedef CVarRef valType;
+  typedef const Variant& valType;
   typedef int64_t rawType; // This is never actually used but it's
                          // needed to keep the compiler happy
 };
@@ -101,7 +101,7 @@ inline int64_t keyAsValue<KeyType::Int>(TypedValue* key) {
   return reinterpret_cast<int64_t>(key);
 }
 template<>
-inline CVarRef keyAsValue<KeyType::Any>(TypedValue* key) {
+inline const Variant& keyAsValue<KeyType::Any>(TypedValue* key) {
   return tvAsCVarRef(key);
 }
 template<>
@@ -130,15 +130,15 @@ inline void initScratchKey(TypedValue& tv, TypedValue*& key) {
 
 void objArrayAccess(ObjectData* base);
 TypedValue* objOffsetGet(TypedValue& tvRef, ObjectData* base,
-                         CVarRef offset, bool validate=true);
-bool objOffsetIsset(TypedValue& tvRef, ObjectData* base, CVarRef offset,
+                         const Variant& offset, bool validate=true);
+bool objOffsetIsset(TypedValue& tvRef, ObjectData* base, const Variant& offset,
                     bool validate=true);
-bool objOffsetEmpty(TypedValue& tvRef, ObjectData* base, CVarRef offset,
+bool objOffsetEmpty(TypedValue& tvRef, ObjectData* base, const Variant& offset,
                     bool validate=true);
-void objOffsetSet(ObjectData* base, CVarRef offset, TypedValue* val,
+void objOffsetSet(ObjectData* base, const Variant& offset, TypedValue* val,
                   bool validate=true);
 void objOffsetAppend(ObjectData* base, TypedValue* val, bool validate=true);
-void objOffsetUnset(ObjectData* base, CVarRef offset);
+void objOffsetUnset(ObjectData* base, const Variant& offset);
 
 StringData* prepareAnyKey(TypedValue* tv);
 
@@ -444,7 +444,7 @@ inline TypedValue* ElemDObject(TypedValue& tvRef, TypedValue* base,
       return nullptr;
     }
     return collectionAt(obj, key);
-  } else if (obj->getVMClass() == SystemLib::s_ArrayObjectClass) {
+  } else if (obj->getVMClass()->classof(SystemLib::s_ArrayObjectClass)) {
     auto storage = obj->o_realProp(s_storage, 0,
                                    SystemLib::s_ArrayObjectClass->nameRef());
     // ArrayObject should have the 'storage' property...
@@ -1220,7 +1220,7 @@ template <bool setResult>
 NEVER_INLINE
 void incDecBodySlow(IncDecOp op, TypedValue* fr, TypedValue* to) {
   if (fr->m_type == KindOfUninit) {
-    ActRec* fp = g_vmContext->m_fp;
+    ActRec* fp = g_context->m_fp;
     size_t pind = reinterpret_cast<TypedValue*>(fp) - fr - 1;
     if (pind < size_t(fp->m_func->numNamedLocals())) {
       // Only raise a warning if fr points to a local variable
@@ -1668,11 +1668,7 @@ inline DataType propPreNull(TypedValue& tvScratch, TypedValue*& result) {
   }
   return KindOfNull;
 }
-inline ObjectData* createDefaultObject() {
-  raise_warning(Strings::CREATING_DEFAULT_OBJECT);
-  ObjectData* obj = newInstance(SystemLib::s_stdclassClass);
-  return obj;
-}
+
 template <bool warn, bool define>
 inline DataType propPreStdclass(TypedValue& tvScratch,
                                 TypedValue*& result, TypedValue* base) {
@@ -1680,12 +1676,13 @@ inline DataType propPreStdclass(TypedValue& tvScratch,
     return propPreNull<warn>(tvScratch, result);
   }
   // TODO(#1124706): We don't want to do this anymore.
-  ObjectData* obj = createDefaultObject();
+  auto const obj = newInstance(SystemLib::s_stdclassClass);
   tvRefcountedDecRef(base);
   base->m_type = KindOfObject;
   base->m_data.pobj = obj;
   obj->incRefCount();
   result = base;
+  raise_warning(Strings::CREATING_DEFAULT_OBJECT);
   return KindOfObject;
 }
 
@@ -1815,17 +1812,15 @@ inline void SetPropNull(Cell* val) {
 
 inline void SetPropStdclass(TypedValue* base, TypedValue* key,
                             Cell* val) {
-  // createDefaultObject could re-enter and clobber base.
-  auto const baseCopy = *base;
-
-  ObjectData* obj = createDefaultObject();
+  auto const obj = newInstance(SystemLib::s_stdclassClass);
   obj->incRefCount();
-  StringData* keySD = prepareKey(key);
+  auto const keySD = prepareKey(key);
   obj->setProp(nullptr, keySD, (TypedValue*)val);
   decRefStr(keySD);
-  tvRefcountedDecRef(baseCopy);
+  tvRefcountedDecRef(base);
   base->m_type = KindOfObject;
   base->m_data.pobj = obj;
+  raise_warning(Strings::CREATING_DEFAULT_OBJECT);
 }
 
 template <KeyType keyType>
@@ -1893,11 +1888,12 @@ inline TypedValue* SetOpPropNull(TypedValue& tvScratch) {
 inline TypedValue* SetOpPropStdclass(TypedValue& tvRef, SetOpOp op,
                                      TypedValue* base, TypedValue* key,
                                      Cell* rhs) {
-  ObjectData* obj = createDefaultObject();
+  auto const obj = newInstance(SystemLib::s_stdclassClass);
   obj->incRefCount();
   tvRefcountedDecRef(base);
   base->m_type = KindOfObject;
   base->m_data.pobj = obj;
+  raise_warning(Strings::CREATING_DEFAULT_OBJECT);
 
   StringData* keySD = prepareKey(key);
   tvWriteNull(&tvRef);
@@ -1982,11 +1978,12 @@ inline void IncDecPropNull(TypedValue& dest) {
 template <bool setResult>
 inline void IncDecPropStdclass(IncDecOp op, TypedValue* base,
                                TypedValue* key, TypedValue& dest) {
-  ObjectData* obj = createDefaultObject();
+  auto const obj = newInstance(SystemLib::s_stdclassClass);
   obj->incRefCount();
   tvRefcountedDecRef(base);
   base->m_type = KindOfObject;
   base->m_data.pobj = obj;
+  raise_warning(Strings::CREATING_DEFAULT_OBJECT);
 
   StringData* keySD = prepareKey(key);
   TypedValue tv;

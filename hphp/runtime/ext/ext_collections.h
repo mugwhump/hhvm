@@ -19,6 +19,7 @@
 #define incl_HPHP_EXT_COLLECTION_H_
 
 #include "hphp/runtime/base/base-includes.h"
+#include <limits>
 #include "hphp/system/systemlib.h"
 
 #define DECLARE_COLLECTION_MAGIC_METHODS()           \
@@ -30,22 +31,35 @@
 
 #define DECLARE_ITERABLE_MATERIALIZE_METHODS()       \
   Object t_tovector();                               \
-  Object t_tofrozenvector();                         \
+  Object t_toimmvector();                          \
   Object t_toset();                                  \
-  Object t_tofrozenset()
+  Object t_toimmset()
 
 #define DECLARE_KEYEDITERABLE_MATERIALIZE_METHODS()  \
   DECLARE_ITERABLE_MATERIALIZE_METHODS();            \
-  Object t_tomap()
+  Object t_tomap();                                  \
+  Object t_toimmmap()
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
+
+/*
+ * All native collection class have their m_size field at the same
+ * offset in the object.
+ */
+constexpr ptrdiff_t FAST_COLLECTION_SIZE_OFFSET = 20;
+inline size_t getCollectionSize(const ObjectData* od) {
+  assert(od->isCollection());
+  return *reinterpret_cast<const uint32_t*>(
+    reinterpret_cast<const char*>(od) + FAST_COLLECTION_SIZE_OFFSET
+  );
+}
 
 /**
  * Called by the JIT on an emitVectorSet().
  */
 void triggerCow(c_Vector* vec);
-ArrayIter getArrayIterHelper(CVarRef v, size_t& sz);
+ArrayIter getArrayIterHelper(const Variant& v, size_t& sz);
 TypedValue* cvarToCell(const Variant* v);
 
 using ExtCollectionObjectData = ExtObjectDataFlags<
@@ -62,7 +76,7 @@ void throwOOB(int64_t key) ATTRIBUTE_NORETURN;
 
 ///////////////////////////////////////////////////////////////////////////////
 // class BaseVector: encapsulates functionality that is common to both
-// c_Vector and c_FrozenVector. It doesn't map to any PHP-land class.
+// c_Vector and c_ImmVector. It doesn't map to any PHP-land class.
 
 class BaseVector : public ExtCollectionObjectData {
 
@@ -74,105 +88,53 @@ class BaseVector : public ExtCollectionObjectData {
   Object items();
 
   // ConstIndexAccess
-  bool containskey(CVarRef key);
-  Variant at(CVarRef key);
-  Variant get(CVarRef key);
+  bool containskey(const Variant& key);
+  Variant at(const Variant& key);
+  Variant get(const Variant& key);
 
   // KeyedIterable
   Object getiterator();
   template<class TVector, class MakeArgs>
   typename std::enable_if<
     std::is_base_of<BaseVector, TVector>::value, Object>::type
-  php_map(CVarRef callback, MakeArgs);
+  php_map(const Variant& callback, MakeArgs);
 
   template<class TVector, class MakeArgs>
   typename std::enable_if<
     std::is_base_of<BaseVector, TVector>::value, Object>::type
-  php_filter(CVarRef callback, MakeArgs);
+  php_filter(const Variant& callback, MakeArgs);
 
-  void zip(BaseVector* bvec, CVarRef iterable);
+  template<class TVector>
+  typename std::enable_if<
+    std::is_base_of<BaseVector, TVector>::value, Object>::type
+  php_take(const Variant& n);
+
+  template<class TVector, bool checkVersion>
+  typename std::enable_if<
+    std::is_base_of<BaseVector, TVector>::value, Object>::type
+  php_takeWhile(const Variant& fn);
+
+  template<class TVector>
+  typename std::enable_if<
+    std::is_base_of<BaseVector, TVector>::value, Object>::type
+  php_skip(const Variant& n);
+
+  template<class TVector, bool checkVersion>
+  typename std::enable_if<
+    std::is_base_of<BaseVector, TVector>::value, Object>::type
+  php_skipWhile(const Variant& fn);
+
+  void zip(BaseVector* bvec, const Variant& iterable);
   void kvzip(BaseVector* bvec);
   void keys(BaseVector* bvec);
 
   // Others
-  void construct(CVarRef iterable = null_variant);
+  void construct(const Variant& iterable = null_variant);
   Object lazy();
   Array toarray();
   Array tokeysarray();
   Array tovaluesarray();
-  int64_t linearsearch(CVarRef search_value);
-
-  template<class T>
-  static Object slice(const char* vecType, CVarRef vec, CVarRef offset,
-                      CVarRef len = uninit_null()) {
-
-    std::string notVecMsg = std::string("vec must be an instance of ") +
-      std::string(vecType);
-
-    if (!vec.isObject()) {
-      Object e(SystemLib::AllocInvalidArgumentExceptionObject(notVecMsg));
-      throw e;
-    }
-    ObjectData* obj = vec.getObjectData();
-    if (obj->getVMClass() != T::classof()) {
-      Object e(SystemLib::AllocInvalidArgumentExceptionObject(notVecMsg));
-      throw e;
-    }
-    if (!offset.isInteger()) {
-      Object e(SystemLib::AllocInvalidArgumentExceptionObject(
-                 "Parameter offset must be an integer"));
-      throw e;
-    }
-    if (!len.isNull() && !len.isInteger()) {
-      Object e(SystemLib::AllocInvalidArgumentExceptionObject(
-                 "Parameter len must be null or an integer"));
-      throw e;
-    }
-    T* target;
-    Object ret = target = NEWOBJ(T)();
-    auto v = static_cast<T*>(obj);
-    int64_t sz = v->m_size;
-    int64_t startPos = offset.toInt64();
-    if (UNLIKELY(uint64_t(startPos) >= uint64_t(sz))) {
-      if (startPos >= 0) {
-        return ret;
-      }
-      startPos += sz;
-      if (startPos < 0) {
-        startPos = 0;
-      }
-    }
-    int64_t endPos;
-    if (len.isInteger()) {
-      int64_t intLen = len.toInt64();
-      if (LIKELY(intLen > 0)) {
-        endPos = startPos + intLen;
-        if (endPos > sz) {
-          endPos = sz;
-        }
-      } else {
-        if (intLen == 0) {
-          return ret;
-        }
-        endPos = sz + intLen;
-        if (endPos <= startPos) {
-          return ret;
-        }
-      }
-    } else {
-      endPos = sz;
-    }
-    assert(startPos < endPos);
-    uint targetSize = endPos - startPos;
-    TypedValue* data;
-    target->m_capacity = target->m_size = targetSize;
-    target->m_data = data =
-      (TypedValue*)MM().objMallocLogged(targetSize * sizeof(TypedValue));
-    for (uint i = 0; i < targetSize; ++i, ++startPos) {
-      cellDup(v->m_data[startPos], data[i]);
-    }
-    return ret;
-  }
+  int64_t linearsearch(const Variant& search_value);
 
   template<class TVector>
   typename std::enable_if<
@@ -213,7 +175,7 @@ class BaseVector : public ExtCollectionObjectData {
   static bool Equals(const ObjectData* obj1, const ObjectData* obj2);
 
   Array toArrayImpl() const;
-  void init(CVarRef t);
+  void init(const Variant& t);
 
   // Try to get the compiler to inline these.
 
@@ -253,8 +215,8 @@ class BaseVector : public ExtCollectionObjectData {
   static size_t sizeOffset() { return offsetof(BaseVector, m_size); }
   static size_t dataOffset() { return offsetof(BaseVector, m_data); }
 
-  static size_t frozenCopyOffset() {
-    return offsetof(BaseVector, m_frozenCopy);
+  static size_t immCopyOffset() {
+    return offsetof(BaseVector, m_immCopy);
   }
 
   void addFront(TypedValue* val);
@@ -290,11 +252,11 @@ class BaseVector : public ExtCollectionObjectData {
    * we might need to to trigger COW.
    */
   void mutate() {
-    if (!m_frozenCopy.isNull()) cow();
+    if (!m_immCopy.isNull()) cow();
   }
 
   /**
-   * Copy-On-Write the buffer and reset the frozen copy.
+   * Copy-On-Write the buffer and reset the immutable copy.
    */
   void cow();
 
@@ -308,8 +270,8 @@ class BaseVector : public ExtCollectionObjectData {
   TypedValue* m_data;
   uint m_capacity;
   int32_t m_version;
-  // A pointer to a FrozenVector which with it shares the buffer.
-  Object m_frozenCopy;
+  // A pointer to a ImmVector which with it shares the buffer.
+  Object m_immCopy;
 
  private:
 
@@ -323,6 +285,7 @@ class BaseVector : public ExtCollectionObjectData {
   // Friends
 
   friend class c_VectorIterator;
+  friend class c_Pair;
 
   template<class TVector>
   friend ObjectData* collectionDeepCopyBaseVector(TVector* vec);
@@ -343,13 +306,13 @@ class c_Vector : public BaseVector {
 
   explicit c_Vector(Class* cls = c_Vector::classof());
 
-  void t___construct(CVarRef iterable = null_variant);
-  Object t_add(CVarRef val);
-  Object t_addall(CVarRef val);
-  Object t_append(CVarRef val); // deprecated
+  void t___construct(const Variant& iterable = null_variant);
+  Object t_add(const Variant& val);
+  Object t_addall(const Variant& val);
+  Object t_append(const Variant& val); // deprecated
   Variant t_pop();
-  void t_resize(CVarRef sz, CVarRef value);
-  void t_reserve(CVarRef sz);
+  void t_resize(const Variant& sz, const Variant& value);
+  void t_reserve(const Variant& sz);
   Object t_clear();
   bool t_isempty();
   int64_t t_count();
@@ -358,37 +321,42 @@ class c_Vector : public BaseVector {
   Object t_values();
   Object t_lazy();
   Object t_kvzip();
-  Variant t_at(CVarRef key);
-  Variant t_get(CVarRef key);
-  Object t_set(CVarRef key, CVarRef value);
-  Object t_setall(CVarRef iterable);
-  bool t_contains(CVarRef key); // deprecated
-  bool t_containskey(CVarRef key);
-  Object t_removekey(CVarRef key);
+  Variant t_at(const Variant& key);
+  Variant t_get(const Variant& key);
+  Object t_set(const Variant& key, const Variant& value);
+  Object t_setall(const Variant& iterable);
+  bool t_contains(const Variant& key); // deprecated
+  bool t_containskey(const Variant& key);
+  Object t_removekey(const Variant& key);
   Array t_toarray();
   DECLARE_KEYEDITERABLE_MATERIALIZE_METHODS();
   Array t_tokeysarray();
   Array t_tovaluesarray();
   void t_reverse();
-  void t_splice(CVarRef offset, CVarRef len = uninit_null(),
-                CVarRef replacement = uninit_null());
-  int64_t t_linearsearch(CVarRef search_value);
+  void t_splice(const Variant& offset, const Variant& len = uninit_null(),
+                const Variant& replacement = uninit_null());
+  int64_t t_linearsearch(const Variant& search_value);
   void t_shuffle();
   Object t_getiterator();
-  Object t_map(CVarRef callback);
-  Object t_mapwithkey(CVarRef callback);
-  Object t_filter(CVarRef callback);
-  Object t_filterwithkey(CVarRef callback);
-  Object t_zip(CVarRef iterable);
+  Object t_map(const Variant& callback);
+  Object t_mapwithkey(const Variant& callback);
+  Object t_filter(const Variant& callback);
+  Object t_filterwithkey(const Variant& callback);
+  Object t_zip(const Variant& iterable);
+  Object t_take(const Variant& n);
+  Object t_takewhile(const Variant& fn);
+  Object t_skip(const Variant& n);
+  Object t_skipwhile(const Variant& fn);
   DECLARE_COLLECTION_MAGIC_METHODS();
-  static Object ti_fromitems(CVarRef iterable);
-  static Object ti_fromarray(CVarRef arr); // deprecated
-  static Object ti_slice(CVarRef vec, CVarRef offset,
-                         CVarRef len = uninit_null());
-  static Object t_slice(CVarRef vec, CVarRef offset,
-                        CVarRef len = uninit_null()) {
+  static Object ti_fromitems(const Variant& iterable);
+  static Object ti_fromarray(const Variant& arr); // deprecated
+  static Object ti_slice(const Variant& vec, const Variant& offset,
+                         const Variant& len = uninit_null());
+  static Object t_slice(const Variant& vec, const Variant& offset,
+                        const Variant& len = uninit_null()) {
     return ti_slice(vec, offset, len);
   }
+  Object t_immutable();
 
   static void throwOOB(int64_t key) ATTRIBUTE_NORETURN;
 
@@ -410,7 +378,7 @@ class c_Vector : public BaseVector {
   enum SortFlavor { IntegerSort, StringSort, GenericSort };
 
   void sort(int sort_flags, bool ascending);
-  bool usort(CVarRef cmp_function);
+  bool usort(const Variant& cmp_function);
 
   static c_Vector* Clone(ObjectData* obj) {
     return BaseVector::Clone<c_Vector>(obj);
@@ -428,8 +396,8 @@ class c_Vector : public BaseVector {
   template <typename AccessorT>
   SortFlavor preSort(const AccessorT& acc);
 
-  void initFvFields(c_FrozenVector* fv);
-  int64_t checkRequestedCapacity(CVarRef sz);
+  Object getImmutableCopy();
+  int64_t checkRequestedCapacity(const Variant& sz);
 
   // Friends
   friend void collectionAppend(ObjectData* obj, TypedValue* val);
@@ -467,12 +435,12 @@ class c_VectorIterator : public ExtObjectData {
 };
 
 ///////////////////////////////////////////////////////////////////////////////
-// class FrozenVector
+// class ImmVector
 
-FORWARD_DECLARE_CLASS(FrozenVector);
-class c_FrozenVector : public BaseVector {
+FORWARD_DECLARE_CLASS(ImmVector);
+class c_ImmVector : public BaseVector {
 public:
-  DECLARE_CLASS_NO_SWEEP(FrozenVector)
+  DECLARE_CLASS_NO_SWEEP(ImmVector)
 
 public:
   // The methods that implement the ConstVector interface simply forward
@@ -486,34 +454,40 @@ public:
   Object t_items();
 
   // ConstIndexAccess
-  bool t_containskey(CVarRef key);
-  Variant t_at(CVarRef key);
-  Variant t_get(CVarRef key);
+  bool t_containskey(const Variant& key);
+  Variant t_at(const Variant& key);
+  Variant t_get(const Variant& key);
 
   // KeyedIterable
   Object t_getiterator();
-  Object t_map(CVarRef callback);
-  Object t_mapwithkey(CVarRef callback);
-  Object t_filter(CVarRef callback);
-  Object t_filterwithkey(CVarRef callback);
-  Object t_zip(CVarRef iterable);
+  Object t_map(const Variant& callback);
+  Object t_mapwithkey(const Variant& callback);
+  Object t_filter(const Variant& callback);
+  Object t_filterwithkey(const Variant& callback);
+  Object t_zip(const Variant& iterable);
+  Object t_take(const Variant& n);
+  Object t_takewhile(const Variant& fn);
+  Object t_skip(const Variant& n);
+  Object t_skipwhile(const Variant& fn);
   Object t_kvzip();
   Object t_keys();
 
   // Others
-  void t___construct(CVarRef iterable = null_variant);
+  void t___construct(const Variant& iterable = null_variant);
   Object t_lazy();
   Array t_toarray();
   Array t_tokeysarray();
   Array t_tovaluesarray();
-  int64_t t_linearsearch(CVarRef search_value);
+  int64_t t_linearsearch(const Variant& search_value);
   Object t_values();
 
-  static Object ti_slice(CVarRef vec, CVarRef offset,
-                         CVarRef len = uninit_null());
+  static Object ti_slice(const Variant& vec, const Variant& offset,
+                         const Variant& len = uninit_null());
 
-  static c_FrozenVector* Clone(ObjectData* obj) {
-    return BaseVector::Clone<c_FrozenVector>(obj);
+  Object t_immutable();
+
+  static c_ImmVector* Clone(ObjectData* obj) {
+    return BaseVector::Clone<c_ImmVector>(obj);
   }
 
   DECLARE_COLLECTION_MAGIC_METHODS();
@@ -522,14 +496,15 @@ public:
 
 public:
 
-  explicit c_FrozenVector(Class* cls = c_FrozenVector::classof());
+  explicit c_ImmVector(Class* cls = c_ImmVector::classof());
 
   static void Unserialize(ObjectData* obj, VariableUnserializer* uns,
                           int64_t sz, char type) {
-    BaseVector::Unserialize("FrozenVector", obj, uns, sz, type);
+    BaseVector::Unserialize("ImmVector", obj, uns, sz, type);
   }
 
   friend class c_Vector;
+  friend class c_Pair;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -749,6 +724,8 @@ class BaseMap : public ExtCollectionObjectData {
     return isTombstone(data()[pos].data.m_type);
   }
 
+  bool hasTombstones() const { return m_size != m_used; }
+
   size_t hashSize() const {
     return size_t(m_tableMask) + 1;
   }
@@ -761,7 +738,7 @@ class BaseMap : public ExtCollectionObjectData {
     wordfill(table, Empty, tableSize);
   }
 
-  void init(CVarRef t);
+  void init(const Variant& t);
 
   template <class Hit>
   ssize_t findImpl(size_t h0, Hit) const;
@@ -868,8 +845,8 @@ class BaseMap : public ExtCollectionObjectData {
  public:
   void asort(int sort_flags, bool ascending);
   void ksort(int sort_flags, bool ascending);
-  bool uasort(CVarRef cmp_function);
-  bool uksort(CVarRef cmp_function);
+  bool uasort(const Variant& cmp_function);
+  bool uksort(const Variant& cmp_function);
 
   static void throwBadKeyType() ATTRIBUTE_NORETURN;
 
@@ -882,7 +859,7 @@ class BaseMap : public ExtCollectionObjectData {
 
   friend class c_MapIterator;
   friend class c_Vector;
-  friend class c_FrozenMap;
+  friend class c_ImmMap;
   friend class ArrayIter;
   friend class c_GenMapWaitHandle;
 
@@ -895,9 +872,9 @@ class BaseMap : public ExtCollectionObjectData {
 
  protected: // implementations of the API accessible from user PHP code
 
-  void php_construct(CVarRef iterable = null_variant);
-  Object php_add(CVarRef val);
-  Object php_addAll(CVarRef val);
+  void php_construct(const Variant& iterable = null_variant);
+  Object php_add(const Variant& val);
+  Object php_addAll(const Variant& val);
   Object php_clear();
   bool php_isEmpty() const { return !toBoolImpl(); }
   Object php_items() {
@@ -908,13 +885,13 @@ class BaseMap : public ExtCollectionObjectData {
     return SystemLib::AllocLazyKeyedIterableViewObject(this);
   }
   Object php_kvzip() const;
-  Variant php_at(CVarRef key) const;
-  Variant php_get(CVarRef key) const;
-  Object php_set(CVarRef key, CVarRef value);
-  Object php_setAll(CVarRef iterable);
-  Object php_put(CVarRef key, CVarRef value); // deprecated
-  bool php_contains(CVarRef key) const;
-  Object php_remove(CVarRef key);
+  Variant php_at(const Variant& key) const;
+  Variant php_get(const Variant& key) const;
+  Object php_set(const Variant& key, const Variant& value);
+  Object php_setAll(const Variant& iterable);
+  Object php_put(const Variant& key, const Variant& value); // deprecated
+  bool php_contains(const Variant& key) const;
+  Object php_remove(const Variant& key);
   Array php_toArray() const;
   Array php_toKeysArray() const;
   Array php_toValuesArray() const;
@@ -923,37 +900,57 @@ class BaseMap : public ExtCollectionObjectData {
   template<class TMap>
   typename std::enable_if<
     std::is_base_of<BaseMap, TMap>::value, Object>::type
-  php_differenceByKey(CVarRef it);
+  php_differenceByKey(const Variant& it);
 
   Object php_getIterator();
 
   template<class TMap, class MakeArgs>
   typename std::enable_if<
     std::is_base_of<BaseMap, TMap>::value, Object>::type
-  php_map(CVarRef callback, MakeArgs) const;
+  php_map(const Variant& callback, MakeArgs) const;
 
   template<class TMap, class MakeArgs>
   typename std::enable_if<
     std::is_base_of<BaseMap, TMap>::value, Object>::type
-  php_filter(CVarRef callback, MakeArgs) const;
+  php_filter(const Variant& callback, MakeArgs) const;
 
   template<class MakeArgs>
-  Object php_retain(CVarRef callback, MakeArgs);
+  Object php_retain(const Variant& callback, MakeArgs);
 
   template<class TMap>
   typename std::enable_if<
     std::is_base_of<BaseMap, TMap>::value, Object>::type
-  php_zip(CVarRef iterable) const;
+  php_zip(const Variant& iterable) const;
 
   template<class TMap>
   typename std::enable_if<
     std::is_base_of<BaseMap, TMap>::value, Object>::type
-  static php_mapFromIterable(CVarRef iterable);
+  php_take(const Variant& n);
+
+  template<class TMap, bool checkVersion>
+  typename std::enable_if<
+    std::is_base_of<BaseMap, TMap>::value, Object>::type
+  php_takeWhile(const Variant& fn);
 
   template<class TMap>
   typename std::enable_if<
     std::is_base_of<BaseMap, TMap>::value, Object>::type
-  static php_mapFromArray(CVarRef arr);
+  php_skip(const Variant& n);
+
+  template<class TMap, bool checkVersion>
+  typename std::enable_if<
+    std::is_base_of<BaseMap, TMap>::value, Object>::type
+  php_skipWhile(const Variant& fn);
+
+  template<class TMap>
+  typename std::enable_if<
+    std::is_base_of<BaseMap, TMap>::value, Object>::type
+  static php_mapFromIterable(const Variant& iterable);
+
+  template<class TMap>
+  typename std::enable_if<
+    std::is_base_of<BaseMap, TMap>::value, Object>::type
+  static php_mapFromArray(const Variant& arr);
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -971,9 +968,9 @@ class c_Map : public BaseMap {
   static c_Map* Clone(ObjectData* obj);
 
  public: // PHP API - No inlines (required by .idl.json linking)
-  void t___construct(CVarRef iterable = null_variant);
-  Object t_add(CVarRef val);
-  Object t_addall(CVarRef val);
+  void t___construct(const Variant& iterable = null_variant);
+  Object t_add(const Variant& val);
+  Object t_addall(const Variant& val);
   Object t_clear();
   bool t_isempty();
   int64_t t_count();
@@ -981,73 +978,83 @@ class c_Map : public BaseMap {
   Object t_keys();
   Object t_lazy();
   Object t_kvzip(); // const
-  Variant t_at(CVarRef key); // const
-  Variant t_get(CVarRef key); // const
-  Object t_set(CVarRef key, CVarRef value);
-  Object t_setall(CVarRef iterable);
-  bool t_contains(CVarRef key); // const
-  bool t_containskey(CVarRef key); // const
-  Object t_remove(CVarRef key);
-  Object t_removekey(CVarRef key);
+  Variant t_at(const Variant& key); // const
+  Variant t_get(const Variant& key); // const
+  Object t_set(const Variant& key, const Variant& value);
+  Object t_setall(const Variant& iterable);
+  bool t_contains(const Variant& key); // const
+  bool t_containskey(const Variant& key); // const
+  Object t_remove(const Variant& key);
+  Object t_removekey(const Variant& key);
   Array t_toarray();
   Array t_tokeysarray();
   Array t_tovaluesarray();
   DECLARE_KEYEDITERABLE_MATERIALIZE_METHODS();
   Object t_values();
-  Object t_differencebykey(CVarRef it);
+  Object t_differencebykey(const Variant& it);
   Object t_getiterator();
-  Object t_map(CVarRef callback);
-  Object t_mapwithkey(CVarRef callback);
-  Object t_filter(CVarRef callback);
-  Object t_filterwithkey(CVarRef callback);
-  Object t_retain(CVarRef callback);
-  Object t_retainwithkey(CVarRef callback);
-  Object t_zip(CVarRef iterable);
+  Object t_map(const Variant& callback);
+  Object t_mapwithkey(const Variant& callback);
+  Object t_filter(const Variant& callback);
+  Object t_filterwithkey(const Variant& callback);
+  Object t_retain(const Variant& callback);
+  Object t_retainwithkey(const Variant& callback);
+  Object t_zip(const Variant& iterable);
+  Object t_take(const Variant& n);
+  Object t_takewhile(const Variant& callback);
+  Object t_skip(const Variant& n);
+  Object t_skipwhile(const Variant& fn);
   DECLARE_COLLECTION_MAGIC_METHODS();
-  static Object ti_fromitems(CVarRef iterable);
-  static Object ti_fromarray(CVarRef arr); // deprecated
+  static Object ti_fromitems(const Variant& iterable);
+  static Object ti_fromarray(const Variant& arr); // deprecated
+  Object t_immutable();
 };
 
 ///////////////////////////////////////////////////////////////////////////////
-// class FrozenMap
+// class ImmMap
 
-FORWARD_DECLARE_CLASS(FrozenMap);
-class c_FrozenMap : public BaseMap {
+FORWARD_DECLARE_CLASS(ImmMap);
+class c_ImmMap : public BaseMap {
 
  public:
-  DECLARE_CLASS_NO_SWEEP(FrozenMap)
+  DECLARE_CLASS_NO_SWEEP(ImmMap)
 
   public:
-  explicit c_FrozenMap(Class* cls = c_FrozenMap::classof());
+  explicit c_ImmMap(Class* cls = c_ImmMap::classof());
 
-  static c_FrozenMap* Clone(ObjectData* obj);
+  static c_ImmMap* Clone(ObjectData* obj);
 
  public: // PHP API - No inlines (required by .idl.json linking)
-  void t___construct(CVarRef iterable = null_variant);
+  void t___construct(const Variant& iterable = null_variant);
   bool t_isempty();
   int64_t t_count();
   Object t_items();
   Object t_keys();
   Object t_lazy();
   Object t_kvzip();
-  Variant t_at(CVarRef key);
-  Variant t_get(CVarRef key);
-  bool t_contains(CVarRef key);
-  bool t_containskey(CVarRef key);
+  Variant t_at(const Variant& key);
+  Variant t_get(const Variant& key);
+  bool t_contains(const Variant& key);
+  bool t_containskey(const Variant& key);
   Array t_toarray();
   Array t_tokeysarray();
   Array t_tovaluesarray();
   DECLARE_KEYEDITERABLE_MATERIALIZE_METHODS();
   Object t_values();
-  Object t_differencebykey(CVarRef it);
+  Object t_differencebykey(const Variant& it);
   Object t_getiterator();
-  Object t_map(CVarRef callback);
-  Object t_mapwithkey(CVarRef callback);
-  Object t_filter(CVarRef callback);
-  Object t_filterwithkey(CVarRef callback);
-  Object t_zip(CVarRef iterable);
+  Object t_map(const Variant& callback);
+  Object t_mapwithkey(const Variant& callback);
+  Object t_filter(const Variant& callback);
+  Object t_filterwithkey(const Variant& callback);
+  Object t_zip(const Variant& iterable);
+  Object t_take(const Variant& n);
+  Object t_takewhile(const Variant& callback);
+  Object t_skip(const Variant& n);
+  Object t_skipwhile(const Variant& fn);
   DECLARE_COLLECTION_MAGIC_METHODS();
-  static Object ti_fromitems(CVarRef iterable);
+  static Object ti_fromitems(const Variant& iterable);
+  Object t_immutable();
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1204,6 +1211,8 @@ class BaseSet : public ExtCollectionObjectData {
     return isTombstone(data()[pos].data.m_type);
   }
 
+  bool hasTombstones() const { return m_size != m_used; }
+
   size_t hashSize() const {
     return size_t(m_tableMask) + 1;
   }
@@ -1301,7 +1310,7 @@ class BaseSet : public ExtCollectionObjectData {
   }
 
  public:
-  void init(CVarRef t);
+  void init(const Variant& t);
 
   void add(TypedValue* val) {
     if (val->m_type == KindOfInt64) {
@@ -1378,15 +1387,15 @@ class BaseSet : public ExtCollectionObjectData {
 protected:
   // PHP-land methods exported by child classes.
 
-  void    php_construct(CVarRef iterable = null_variant);
+  void    php_construct(const Variant& iterable = null_variant);
 
-  Object  php_add(CVarRef val) {
+  Object  php_add(const Variant& val) {
     TypedValue* tv = cvarToCell(&val);
     add(tv);
     return this;
   }
 
-  Object  php_addAll(CVarRef val);
+  Object  php_addAll(const Variant& val);
 
   Object  php_clear();
 
@@ -1403,8 +1412,8 @@ protected:
   }
 
   Object  php_lazy() { return SystemLib::AllocLazyIterableViewObject(this); }
-  bool    php_contains(CVarRef key);
-  Object  php_remove(CVarRef key);
+  bool    php_contains(const Variant& key);
+  Object  php_remove(const Variant& key);
   Array   php_toArray() { return toArrayImpl(); }
   Array   php_toKeysArray() { return php_toValuesArray(); }
   Array   php_toValuesArray();
@@ -1413,32 +1422,52 @@ protected:
   template<class TSet>
   typename std::enable_if<
     std::is_base_of<BaseSet, TSet>::value, Object>::type
-  php_map(CVarRef callback);
+  php_map(const Variant& callback);
 
   template<class TSet>
   typename std::enable_if<
     std::is_base_of<BaseSet, TSet>::value, Object>::type
-  php_filter(CVarRef callback);
+  php_filter(const Variant& callback);
 
   template<class TSet>
   typename std::enable_if<
     std::is_base_of<BaseSet, TSet>::value, Object>::type
-  php_zip(CVarRef iterable);
+  php_zip(const Variant& iterable);
 
   template<class TSet>
   typename std::enable_if<
     std::is_base_of<BaseSet, TSet>::value, Object>::type
-  static php_fromItems(CVarRef iterable);
+  php_take(const Variant& n);
+
+  template<class TSet, bool checkVersion>
+  typename std::enable_if<
+    std::is_base_of<BaseSet, TSet>::value, Object>::type
+  php_takeWhile(const Variant& fn);
 
   template<class TSet>
   typename std::enable_if<
     std::is_base_of<BaseSet, TSet>::value, Object>::type
-  static php_fromArray(CVarRef arr);
+  php_skip(const Variant& n);
+
+  template<class TSet, bool checkVersion>
+  typename std::enable_if<
+    std::is_base_of<BaseSet, TSet>::value, Object>::type
+  php_skipWhile(const Variant& fn);
 
   template<class TSet>
   typename std::enable_if<
     std::is_base_of<BaseSet, TSet>::value, Object>::type
-  static php_fromArrays(int _argc, CArrRef _argv = null_array);
+  static php_fromItems(const Variant& iterable);
+
+  template<class TSet>
+  typename std::enable_if<
+    std::is_base_of<BaseSet, TSet>::value, Object>::type
+  static php_fromArray(const Variant& arr);
+
+  template<class TSet>
+  typename std::enable_if<
+    std::is_base_of<BaseSet, TSet>::value, Object>::type
+  static php_fromArrays(int _argc, const Array& _argv = null_array);
 
 protected:
   // BaseSet is an abstract class.
@@ -1488,31 +1517,36 @@ class c_Set : public BaseSet {
   // PHP-land methods.
 
   explicit c_Set(Class* cls = c_Set::classof());
-  void t___construct(CVarRef iterable = null_variant);
-  Object t_add(CVarRef val);
-  Object t_addall(CVarRef val);
+  void t___construct(const Variant& iterable = null_variant);
+  Object t_add(const Variant& val);
+  Object t_addall(const Variant& val);
   Object t_clear();
   bool t_isempty();
   int64_t t_count();
   Object t_items();
   Object t_values();
   Object t_lazy();
-  bool t_contains(CVarRef key);
-  Object t_remove(CVarRef key);
+  bool t_contains(const Variant& key);
+  Object t_remove(const Variant& key);
   Array t_toarray();
   Array t_tokeysarray();
   Array t_tovaluesarray();
   DECLARE_ITERABLE_MATERIALIZE_METHODS();
   Object t_getiterator();
-  Object t_map(CVarRef callback);
-  Object t_filter(CVarRef callback);
-  Object t_zip(CVarRef iterable);
-  Object t_removeall(CVarRef iterable);
-  Object t_difference(CVarRef iterable);
+  Object t_map(const Variant& callback);
+  Object t_filter(const Variant& callback);
+  Object t_zip(const Variant& iterable);
+  Object t_take(const Variant& n);
+  Object t_takewhile(const Variant& callback);
+  Object t_skip(const Variant& n);
+  Object t_skipwhile(const Variant& fn);
+  Object t_removeall(const Variant& iterable);
+  Object t_difference(const Variant& iterable);
   DECLARE_COLLECTION_MAGIC_METHODS();
-  static Object ti_fromitems(CVarRef iterable);
-  static Object ti_fromarray(CVarRef arr); // deprecated
-  static Object ti_fromarrays(int _argc, CArrRef _argv = null_array);
+  static Object ti_fromitems(const Variant& iterable);
+  static Object ti_fromarray(const Variant& arr); // deprecated
+  static Object ti_fromarrays(int _argc, const Array& _argv = null_array);
+  Object t_immutable();
 
  public:
 
@@ -1523,18 +1557,18 @@ class c_Set : public BaseSet {
 };
 
 ///////////////////////////////////////////////////////////////////////////////
-// class FrozenSet
+// class ImmSet
 
-FORWARD_DECLARE_CLASS(FrozenSet);
-class c_FrozenSet : public BaseSet {
+FORWARD_DECLARE_CLASS(ImmSet);
+class c_ImmSet : public BaseSet {
 
  public:
-  DECLARE_CLASS_NO_SWEEP(FrozenSet)
+  DECLARE_CLASS_NO_SWEEP(ImmSet)
 
  public:
   // PHP-land methods.
 
-  void t___construct(CVarRef iterable = null_variant);
+  void t___construct(const Variant& iterable = null_variant);
 
   // API
   bool t_isempty();
@@ -1542,11 +1576,15 @@ class c_FrozenSet : public BaseSet {
   Object t_items();
   Object t_values();
   Object t_lazy();
-  bool t_contains(CVarRef key);
+  bool t_contains(const Variant& key);
   Object t_getiterator();
-  Object t_map(CVarRef callback);
-  Object t_filter(CVarRef callback);
-  Object t_zip(CVarRef iterable);
+  Object t_map(const Variant& callback);
+  Object t_filter(const Variant& callback);
+  Object t_zip(const Variant& iterable);
+  Object t_take(const Variant& n);
+  Object t_takewhile(const Variant& callback);
+  Object t_skip(const Variant& n);
+  Object t_skipwhile(const Variant& fn);
 
   // Materialization methods.
   Array t_toarray();
@@ -1558,16 +1596,18 @@ class c_FrozenSet : public BaseSet {
   DECLARE_COLLECTION_MAGIC_METHODS();
 
   // Static methods.
-  static Object ti_fromitems(CVarRef iterable);
-  static Object ti_fromarrays(int _argc, CArrRef _argv = null_array);
+  static Object ti_fromitems(const Variant& iterable);
+  static Object ti_fromarrays(int _argc, const Array& _argv = null_array);
+
+  Object t_immutable();
 
  public:
-  explicit c_FrozenSet(Class* cls = c_FrozenSet::classof());
+  explicit c_ImmSet(Class* cls = c_ImmSet::classof());
 
   static void Unserialize(ObjectData* obj, VariableUnserializer* uns,
                           int64_t sz, char type);
 
-  static c_FrozenSet* Clone(ObjectData* obj);
+  static c_ImmSet* Clone(ObjectData* obj);
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1620,20 +1660,25 @@ class c_Pair : public ExtObjectDataFlags<ObjectData::IsCollection|
   Object t_values();
   Object t_lazy();
   Object t_kvzip();
-  Variant t_at(CVarRef key);
-  Variant t_get(CVarRef key);
-  bool t_containskey(CVarRef key);
+  Variant t_at(const Variant& key);
+  Variant t_get(const Variant& key);
+  bool t_containskey(const Variant& key);
   Array t_toarray();
   Array t_tokeysarray();
   Array t_tovaluesarray();
   DECLARE_KEYEDITERABLE_MATERIALIZE_METHODS();
   Object t_getiterator();
-  Object t_map(CVarRef callback);
-  Object t_mapwithkey(CVarRef callback);
-  Object t_filter(CVarRef callback);
-  Object t_filterwithkey(CVarRef callback);
-  Object t_zip(CVarRef iterable);
+  Object t_map(const Variant& callback);
+  Object t_mapwithkey(const Variant& callback);
+  Object t_filter(const Variant& callback);
+  Object t_filterwithkey(const Variant& callback);
+  Object t_zip(const Variant& iterable);
+  Object t_take(const Variant& n);
+  Object t_takewhile(const Variant& callback);
+  Object t_skip(const Variant& n);
+  Object t_skipwhile(const Variant& fn);
   DECLARE_COLLECTION_MAGIC_METHODS();
+  Object t_immutable();
 
   static void throwOOB(int64_t key) ATTRIBUTE_NORETURN;
 
@@ -1762,14 +1807,14 @@ void collectionAppend(ObjectData* obj, TypedValue* val);
 void collectionInitAppend(ObjectData* obj, TypedValue* val);
 Variant& collectionOffsetAt(ObjectData* obj, int64_t offset);
 Variant& collectionOffsetAt(ObjectData* obj, const String& offset);
-Variant& collectionOffsetAt(ObjectData* obj, CVarRef offset);
+Variant& collectionOffsetAt(ObjectData* obj, const Variant& offset);
 Variant& collectionOffsetGet(ObjectData* obj, int64_t offset);
 Variant& collectionOffsetGet(ObjectData* obj, const String& offset);
-Variant& collectionOffsetGet(ObjectData* obj, CVarRef offset);
-void collectionOffsetSet(ObjectData* obj, int64_t offset, CVarRef val);
-void collectionOffsetSet(ObjectData* obj, const String& offset, CVarRef val);
-void collectionOffsetSet(ObjectData* obj, CVarRef offset, CVarRef val);
-bool collectionOffsetContains(ObjectData* obj, CVarRef offset);
+Variant& collectionOffsetGet(ObjectData* obj, const Variant& offset);
+void collectionOffsetSet(ObjectData* obj, int64_t offset, const Variant& val);
+void collectionOffsetSet(ObjectData* obj, const String& offset, const Variant& val);
+void collectionOffsetSet(ObjectData* obj, const Variant& offset, const Variant& val);
+bool collectionOffsetContains(ObjectData* obj, const Variant& offset);
 void collectionReserve(ObjectData* obj, int64_t sz);
 void collectionUnserialize(ObjectData* obj, VariableUnserializer* uns,
                            int64_t sz, char type);
@@ -1777,11 +1822,11 @@ bool collectionEquals(const ObjectData* obj1, const ObjectData* obj2);
 void collectionDeepCopyTV(TypedValue* tv);
 ArrayData* collectionDeepCopyArray(ArrayData* arr);
 ObjectData* collectionDeepCopyVector(c_Vector* vec);
-ObjectData* collectionDeepCopyFrozenVector(c_FrozenVector* vec);
+ObjectData* collectionDeepCopyImmVector(c_ImmVector* vec);
 ObjectData* collectionDeepCopyMap(c_Map* mp);
-ObjectData* collectionDeepCopyFrozenMap(c_FrozenMap* mp);
+ObjectData* collectionDeepCopyImmMap(c_ImmMap* mp);
 ObjectData* collectionDeepCopySet(c_Set* mp);
-ObjectData* collectionDeepCopyFrozenSet(c_FrozenSet* st);
+ObjectData* collectionDeepCopyImmSet(c_ImmSet* st);
 ObjectData* collectionDeepCopyPair(c_Pair* pair);
 
 ObjectData* newCollectionHelper(uint32_t type, uint32_t size);
@@ -1816,15 +1861,15 @@ inline Variant& collectionOffsetGet(ObjectData* obj, litstr offset) {
   return collectionOffsetGet(obj, Variant(offset));
 }
 
-inline void collectionOffsetSet(ObjectData* obj, bool offset, CVarRef val) {
+inline void collectionOffsetSet(ObjectData* obj, bool offset, const Variant& val) {
   collectionOffsetSet(obj, Variant(offset), val);
 }
 
-inline void collectionOffsetSet(ObjectData* obj, double offset, CVarRef val) {
+inline void collectionOffsetSet(ObjectData* obj, double offset, const Variant& val) {
   collectionOffsetSet(obj, Variant(offset), val);
 }
 
-inline void collectionOffsetSet(ObjectData* obj, litstr offset, CVarRef val) {
+inline void collectionOffsetSet(ObjectData* obj, litstr offset, const Variant& val) {
   collectionOffsetSet(obj, Variant(offset), val);
 }
 

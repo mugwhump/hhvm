@@ -18,6 +18,7 @@
 #include "hphp/runtime/ext/ext_filter.h"
 #include "hphp/runtime/ext/filter/logical_filters.h"
 #include "hphp/runtime/ext/filter/sanitizing_filters.h"
+#include "hphp/runtime/base/request-event-handler.h"
 
 namespace HPHP {
 
@@ -85,9 +86,8 @@ const StaticString
   s_SERVER("_SERVER"),
   s_ENV("_ENV");
 
-class FilterRequestData : public RequestEventHandler {
-public:
-  virtual void requestInit() {
+struct FilterRequestData final : RequestEventHandler {
+  void requestInit() override {
     GlobalVariables *g = get_global_variables();
     // This doesn't copy them yet, but will do COW if they are modified
     m_GET = g->get(s_GET).toArray();
@@ -97,7 +97,7 @@ public:
     m_ENV = g->get(s_ENV).toArray();
   }
 
-  virtual void requestShutdown() {
+  void requestShutdown() override {
     m_GET = nullptr;
     m_POST = nullptr;
     m_COOKIE = nullptr;
@@ -235,9 +235,9 @@ const StaticString
   s_default("default"),
   s_options("options");
 
-static Variant fail(bool return_null, CVarRef options) {
+static Variant fail(bool return_null, const Variant& options) {
   if (options.isArray()) {
-    CArrRef arr(options.toArray());
+    const Array& arr(options.toArray());
     if (arr.exists(s_default)) {
       return options[s_default];
     }
@@ -268,8 +268,8 @@ static filter_list_entry php_find_filter(uint64_t id) {
 
 #define FAIL_IF(x) do { if (x) return false; } while (0)
 
-static bool filter_var(Variant& ret, CVarRef variable, int64_t filter,
-                       CVarRef options) {
+static bool filter_var(Variant& ret, const Variant& variable, int64_t filter,
+                       const Variant& options) {
   filter_list_entry filter_func = php_find_filter(filter);
 
   int64_t flags;
@@ -293,8 +293,8 @@ static bool filter_var(Variant& ret, CVarRef variable, int64_t filter,
   return true;
 }
 
-static bool filter_recursive(Variant& ret, CVarRef variable, int64_t filter,
-                             CVarRef options) {
+static bool filter_recursive(Variant& ret, const Variant& variable, int64_t filter,
+                             const Variant& options) {
   Array arr;
   for (ArrayIter iter(variable.toArray()); iter; ++iter) {
     Variant v;
@@ -337,8 +337,8 @@ Variant f_filter_id(const String& filtername) {
     if (x) return fail(filter_flags & k_FILTER_NULL_ON_FAILURE, options); \
   } while(0)
 
-Variant f_filter_var(CVarRef variable, int64_t filter /* = 516 */,
-                     CVarRef options /* = empty_array */) {
+Variant f_filter_var(const Variant& variable, int64_t filter /* = 516 */,
+                     const Variant& options /* = empty_array */) {
   int64_t filter_flags;
   if (options.isArray()) {
     filter_flags = options[s_flags].toInt64();

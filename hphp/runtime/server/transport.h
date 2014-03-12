@@ -35,7 +35,7 @@ namespace HPHP {
  */
 template <typename V>
 using CaseInsenMap =
-  std::unordered_map<std::string, V, string_hash, string_eqstri>;
+  std::unordered_map<std::string, V, string_hashi, string_eqstri>;
 
 using HeaderMap = CaseInsenMap<std::vector<std::string>>;
 using CookieMap = CaseInsenMap<std::string>;
@@ -331,7 +331,7 @@ public:
   }
   const std::string &getResponseInfo() const { return m_responseCodeInfo; }
   bool headersSent() { return m_headerSent;}
-  bool setHeaderCallback(CVarRef callback);
+  bool setHeaderCallback(const Variant& callback);
 private:
   void sendRawLocked(void *data, int size, int code = 200,
                      bool compressed = false, bool chunked = false,

@@ -25,11 +25,18 @@
 
 namespace HPHP {
 
+const StaticString s_plainfile("plainfile");
+const StaticString s_stdio("STDIO");
+
 ///////////////////////////////////////////////////////////////////////////////
 // constructor and destructor
 
-PlainFile::PlainFile(FILE *stream, bool nonblocking)
-  : File(nonblocking), m_stream(stream), m_buffer(nullptr) {
+PlainFile::PlainFile(FILE *stream, bool nonblocking,
+                     const String& wrapper_type, const String& stream_type)
+  : File(nonblocking,
+         wrapper_type.isNull() ? s_plainfile : wrapper_type,
+         stream_type.isNull() ? s_stdio : stream_type),
+    m_stream(stream), m_buffer(nullptr) {
   if (stream) {
     m_fd = fileno(stream);
     m_buffer = (char *)malloc(BUFSIZ);
@@ -39,8 +46,12 @@ PlainFile::PlainFile(FILE *stream, bool nonblocking)
   m_isLocal = true;
 }
 
-PlainFile::PlainFile(int fd, bool nonblocking)
-  : File(nonblocking), m_stream(nullptr), m_buffer(nullptr) {
+PlainFile::PlainFile(int fd, bool nonblocking,
+                     const String& wrapper_type, const String& stream_type)
+  : File(nonblocking,
+         wrapper_type.isNull() ? s_plainfile : wrapper_type,
+         stream_type.isNull() ? s_stdio : stream_type),
+    m_stream(nullptr), m_buffer(nullptr) {
   m_fd = fd;
 }
 
@@ -49,7 +60,7 @@ PlainFile::~PlainFile() {
 }
 
 void PlainFile::sweep() {
-  PlainFile::closeImpl();
+  closeImpl();
   File::sweep();
 }
 
@@ -99,6 +110,7 @@ bool PlainFile::open(const String& filename, const String& mode) {
 }
 
 bool PlainFile::close() {
+  invokeFiltersOnClose();
   return closeImpl();
 }
 
@@ -248,6 +260,7 @@ BuiltinFile::~BuiltinFile() {
 }
 
 bool BuiltinFile::close() {
+  invokeFiltersOnClose();
   auto status = ::fclose(m_stream);
   m_closed = true;
   m_stream = nullptr;
@@ -257,6 +270,7 @@ bool BuiltinFile::close() {
 }
 
 void BuiltinFile::sweep() {
+  invokeFiltersOnClose();
   // This object was just a wrapper around a FILE* or fd owned by someone else,
   // so don't close it except in explicit calls to close().
   m_stream = nullptr;
@@ -279,7 +293,7 @@ void BuiltinFiles::requestShutdown() {
   m_stderr.reset();
 }
 
-CVarRef BuiltinFiles::GetSTDIN() {
+const Variant& BuiltinFiles::GetSTDIN() {
   if (g_builtin_files->m_stdin.isNull()) {
     BuiltinFile *f = NEWOBJ(BuiltinFile)(stdin);
     g_builtin_files->m_stdin = f;
@@ -289,7 +303,7 @@ CVarRef BuiltinFiles::GetSTDIN() {
   return g_builtin_files->m_stdin;
 }
 
-CVarRef BuiltinFiles::GetSTDOUT() {
+const Variant& BuiltinFiles::GetSTDOUT() {
   if (g_builtin_files->m_stdout.isNull()) {
     BuiltinFile *f = NEWOBJ(BuiltinFile)(stdout);
     g_builtin_files->m_stdout = f;
@@ -299,7 +313,7 @@ CVarRef BuiltinFiles::GetSTDOUT() {
   return g_builtin_files->m_stdout;
 }
 
-CVarRef BuiltinFiles::GetSTDERR() {
+const Variant& BuiltinFiles::GetSTDERR() {
   if (g_builtin_files->m_stderr.isNull()) {
     BuiltinFile *f = NEWOBJ(BuiltinFile)(stderr);
     g_builtin_files->m_stderr = f;

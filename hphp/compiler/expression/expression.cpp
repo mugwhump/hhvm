@@ -15,10 +15,11 @@
 */
 
 #include "hphp/compiler/expression/expression.h"
+#include <vector>
 #include "hphp/compiler/analysis/code_error.h"
 #include "hphp/compiler/parser/parser.h"
 #include "hphp/parser/hphp.tab.hpp"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/compiler/analysis/class_scope.h"
 #include "hphp/compiler/analysis/function_scope.h"
 #include "hphp/compiler/expression/scalar_expression.h"
@@ -376,7 +377,7 @@ void Expression::setTypes(AnalysisResultConstPtr ar, TypePtr actualType,
 
 void Expression::setDynamicByIdentifier(AnalysisResultPtr ar,
                                         const std::string &value) {
-  string id = Util::toLower(value);
+  string id = toLower(value);
   size_t c = id.find("::");
   FunctionScopePtr fi;
   ClassScopePtr ci;
@@ -691,7 +692,7 @@ bool Expression::isUnquotedScalar() const {
 ExpressionPtr Expression::MakeScalarExpression(AnalysisResultConstPtr ar,
                                                BlockScopePtr scope,
                                                LocationPtr loc,
-                                               CVarRef value) {
+                                               const Variant& value) {
   if (value.isArray()) {
     ExpressionListPtr el(new ExpressionList(scope, loc,
                                             ExpressionList::ListKindParam));

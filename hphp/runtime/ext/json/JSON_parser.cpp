@@ -28,6 +28,7 @@ SOFTWARE.
 
 
 #include "hphp/runtime/ext/json/JSON_parser.h"
+#include <vector>
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/builtin-functions.h"
@@ -487,7 +488,7 @@ void utf16_to_utf8(StringBuffer &buf, unsigned short utf16) {
 
 StaticString s__empty_("_empty_");
 
-static void object_set(Variant &var, const String& key, CVarRef value,
+static void object_set(Variant &var, const String& key, const Variant& value,
                        int assoc) {
   if (!assoc) {
     // We know it is stdClass, and everything is public (and dynamic).

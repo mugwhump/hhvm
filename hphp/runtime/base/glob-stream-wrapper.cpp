@@ -25,12 +25,12 @@ namespace HPHP {
 File* GlobStreamWrapper::open(const String& filename,
                               const String& mode,
                               int options,
-                              CVarRef context) {
+                              const Variant& context) {
   // Can't open a glob as a file, it's meant to be opened as a directory
 
   // if the function was called via FCallBuiltin, we'll get a bogus name as
   // the stack frame will be wrong
-  ActRec* ar = g_vmContext->getStackFrame();
+  ActRec* ar = g_context->getStackFrame();
   const char* fn = (ar != nullptr)
     ? ar->func()->name()->data()
     : "OPTIMIZED_BUILTIN";

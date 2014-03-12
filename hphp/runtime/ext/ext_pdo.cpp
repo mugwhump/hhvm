@@ -17,6 +17,7 @@
 #include "hphp/runtime/ext/ext_pdo.h"
 
 #include <string>
+#include <set>
 
 #include "hphp/runtime/ext/pdo_driver.h"
 #include "hphp/runtime/ext/pdo_mysql.h"
@@ -24,7 +25,7 @@
 #include "hphp/runtime/ext/ext_array.h"
 #include "hphp/runtime/ext/ext_class.h"
 #include "hphp/runtime/ext/ext_function.h"
-#include "hphp/runtime/ext/ext_stream.h"
+#include "hphp/runtime/ext/stream/ext_stream.h"
 #include "hphp/runtime/ext/ext_string.h"
 #include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/ini-setting.h"
@@ -32,8 +33,10 @@
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/runtime/base/macros.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
-
+#include "hphp/util/string-vsnprintf.h"
 #include "hphp/system/systemlib.h"
+#include "hphp/runtime/base/request-event-handler.h"
+#include "hphp/runtime/base/persistent-resource-store.h"
 
 #define PDO_HANDLE_DBH_ERR(dbh)                         \
   if (strcmp(dbh->error_code, PDO_ERR_NONE)) {          \
@@ -468,7 +471,7 @@ const StaticString
   s_errorInfo("errorInfo"),
   s_PDOException("PDOException");
 
-void throw_pdo_exception(CVarRef code, CVarRef info, const char *fmt, ...) {
+void throw_pdo_exception(const Variant& code, const Variant& info, const char *fmt, ...) {
   ObjectData *obj = SystemLib::AllocPDOExceptionObject();
   obj->o_set(s_code, code, s_PDOException);
 
@@ -553,7 +556,7 @@ static void pdo_handle_error(sp_PDOConnection dbh, sp_PDOStatement stmt) {
 ///////////////////////////////////////////////////////////////////////////////
 // helpers for PDO class
 
-static inline int64_t pdo_attr_lval(CArrRef options, PDOAttributeType name,
+static inline int64_t pdo_attr_lval(const Array& options, PDOAttributeType name,
                                   int64_t defval) {
   if (options.exists(name)) {
     return options[name].toInt64();
@@ -562,7 +565,7 @@ static inline int64_t pdo_attr_lval(CArrRef options, PDOAttributeType name,
 }
 
 static Object pdo_stmt_instantiate(sp_PDOConnection dbh, const String& clsname,
-                                   CVarRef ctor_args) {
+                                   const Variant& ctor_args) {
   String name = clsname;
   if (name.empty()) {
     name = "PDOStatement";
@@ -580,7 +583,7 @@ static Object pdo_stmt_instantiate(sp_PDOConnection dbh, const String& clsname,
 }
 
 static void pdo_stmt_construct(sp_PDOStatement stmt, Object object,
-                               const String& clsname, CVarRef ctor_args) {
+                               const String& clsname, const Variant& ctor_args) {
   object->o_set("queryString", stmt->query_string);
   if (clsname.empty()) {
     return;
@@ -591,11 +594,11 @@ static void pdo_stmt_construct(sp_PDOStatement stmt, Object object,
   }
   TypedValue ret;
   ObjectData* inst = object.get();
-  g_vmContext->invokeFunc(&ret, cls->getCtor(), ctor_args.toArray(), inst);
+  g_context->invokeFunc(&ret, cls->getCtor(), ctor_args.toArray(), inst);
   tvRefcountedDecRef(&ret);
 }
 
-static bool valid_statement_class(sp_PDOConnection dbh, CVarRef opt,
+static bool valid_statement_class(sp_PDOConnection dbh, const Variant& opt,
                                   String &clsname, Variant &ctor_args) {
   if (!opt.isArray() || !opt.toArray().exists(0) || !opt[0].isString() ||
       !f_class_exists(opt[0].toString())) {
@@ -608,6 +611,10 @@ static bool valid_statement_class(sp_PDOConnection dbh, CVarRef opt,
     return false;
   }
   clsname = opt[0].toString();
+  if (clsname == String("PDOStatement")) {
+    ctor_args = Variant(Array());
+    return true;
+  }
   if (!f_is_subclass_of(clsname, "PDOStatement")) {
     pdo_raise_impl_error
       (dbh, nullptr, "HY000",
@@ -755,7 +762,7 @@ static bool do_fetch_class_prepare(sp_PDOStatement stmt) {
 }
 
 static bool pdo_stmt_set_fetch_mode(sp_PDOStatement stmt, int _argc, int64_t mode,
-                                    CArrRef _argv) {
+                                    const Array& _argv) {
   _argc = _argv.size() + 1;
 
   if (stmt->default_fetch_type == PDO_FETCH_INTO) {
@@ -886,14 +893,11 @@ static bool pdo_stmt_set_fetch_mode(sp_PDOStatement stmt, int _argc, int64_t mod
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class PDORequestData : public RequestEventHandler {
-public:
-  virtual void requestInit() {
-  }
+struct PDORequestData final : RequestEventHandler {
+  void requestInit() override {}
 
-  virtual void requestShutdown() {
-    for (std::set<PDOConnection*>::iterator iter =
-            m_persistent_connections.begin();
+  void requestShutdown() override {
+    for (auto iter = m_persistent_connections.begin();
          iter != m_persistent_connections.end(); ++iter) {
       PDOConnection *conn = *iter;
       if (!conn) {
@@ -926,7 +930,7 @@ c_PDO::~c_PDO() {
 
 void c_PDO::t___construct(const String& dsn, const String& username /* = null_string */,
                           const String& password /* = null_string */,
-                          CArrRef options /* = null_array */) {
+                          const Array& options /* = null_array */) {
   String data_source = dsn;
 
   /* parse the data source name */
@@ -996,7 +1000,7 @@ void c_PDO::t___construct(const String& dsn, const String& username /* = null_st
       shashkey = hashkey.detach();
       /* let's see if we have one cached.... */
       m_dbh = dynamic_cast<PDOConnection*>
-        (g_persistentObjects->get(PDOConnection::PersistentKey,
+        (g_persistentResources->get(PDOConnection::PersistentKey,
                                   shashkey.data()));
 
       if (m_dbh.get()) {
@@ -1047,7 +1051,7 @@ void c_PDO::t___construct(const String& dsn, const String& username /* = null_st
   } else if (m_dbh.get()) {
     if (is_persistent) {
       assert(!shashkey.empty());
-      g_persistentObjects->set(PDOConnection::PersistentKey, shashkey.data(),
+      g_persistentResources->set(PDOConnection::PersistentKey, shashkey.data(),
                                m_dbh.get());
       s_pdo_request_data->m_persistent_connections.insert(m_dbh.get());
     }
@@ -1061,7 +1065,7 @@ void c_PDO::t___construct(const String& dsn, const String& username /* = null_st
 
 
 Variant c_PDO::t_prepare(const String& statement,
-                         CArrRef options /* = null_array */) {
+                         const Array& options /* = null_array */) {
   assert(m_dbh->driver);
   strcpy(m_dbh->error_code, PDO_ERR_NONE);
   m_dbh->query_stmt = NULL;
@@ -1145,7 +1149,7 @@ bool c_PDO::t_rollback() {
   return false;
 }
 
-bool c_PDO::t_setattribute(int64_t attribute, CVarRef value) {
+bool c_PDO::t_setattribute(int64_t attribute, const Variant& value) {
   assert(m_dbh->driver);
 
 #define PDO_LONG_PARAM_CHECK                                           \
@@ -1399,7 +1403,7 @@ Array c_PDO::t_errorinfo() {
   return ret;
 }
 
-Variant c_PDO::t_query(int _argc, const String& sql, CArrRef _argv) {
+Variant c_PDO::t_query(int _argc, const String& sql, const Array& _argv) {
   SYNC_VM_REGS_SCOPED();
   assert(m_dbh->driver);
   strcpy(m_dbh->error_code, PDO_ERR_NONE);
@@ -1480,7 +1484,7 @@ Variant c_PDO::t_quote(const String& str, int64_t paramtype /* = q_PDO$$PARAM_ST
 }
 
 bool c_PDO::t_sqlitecreatefunction(const String& name,
-                                   CVarRef callback,
+                                   const Variant& callback,
                                    int64_t argcount /* = -1 */) {
   auto conn = dynamic_cast<PDOSqliteConnection*>(m_dbh.get());
   if (conn == nullptr) {
@@ -1490,7 +1494,7 @@ bool c_PDO::t_sqlitecreatefunction(const String& name,
 }
 
 bool c_PDO::t_sqlitecreateaggregate(const String& name,
-                                    CVarRef step, CVarRef final,
+                                    const Variant& step, const Variant& final,
                                     int64_t argcount /* = -1 */) {
   raise_recoverable_error("PDO::sqliteCreateAggregate not implemented");
   return false;
@@ -2025,8 +2029,8 @@ static bool do_fetch(sp_PDOStatement stmt, bool do_bind, Variant &ret,
   return true;
 }
 
-static int register_bound_param(CVarRef paramno, VRefParam param, int64_t type,
-                                int64_t max_value_len, CVarRef driver_params,
+static int register_bound_param(const Variant& paramno, VRefParam param, int64_t type,
+                                int64_t max_value_len, const Variant& driver_params,
                                 sp_PDOStatement stmt, bool is_param) {
   SmartResource<PDOBoundParam> p(NEWOBJ(PDOBoundParam));
   // need to make sure this is NULL, in case a fatal errors occurs before its set
@@ -2636,7 +2640,7 @@ c_PDOStatement::~c_PDOStatement() {
   m_row.reset();
 }
 
-Variant c_PDOStatement::t_execute(CArrRef params /* = null_array */) {
+Variant c_PDOStatement::t_execute(const Array& params /* = null_array */) {
   SYNC_VM_REGS_SCOPED();
   strcpy(m_stmt->error_code, PDO_ERR_NONE);
 
@@ -2728,7 +2732,7 @@ Variant c_PDOStatement::t_fetch(int64_t how /* = 0 */,
 }
 
 Variant c_PDOStatement::t_fetchobject(const String& class_name /* = null_string */,
-                                      CVarRef ctor_args /* = null */) {
+                                      const Variant& ctor_args /* = null */) {
   strcpy(m_stmt->error_code, PDO_ERR_NONE);
   if (!pdo_stmt_verify_mode(m_stmt, PDO_FETCH_CLASS, false)) {
     return false;
@@ -2783,8 +2787,8 @@ Variant c_PDOStatement::t_fetchcolumn(int64_t column_numner /* = 0 */) {
 }
 
 Variant c_PDOStatement::t_fetchall(int64_t how /* = 0 */,
-                                   CVarRef class_name /* = null */,
-                                   CVarRef ctor_args /* = null */) {
+                                   const Variant& class_name /* = null */,
+                                   const Variant& ctor_args /* = null */) {
   if (!pdo_stmt_verify_mode(m_stmt, how, true)) {
     return false;
   }
@@ -2905,23 +2909,23 @@ Variant c_PDOStatement::t_fetchall(int64_t how /* = 0 */,
   return return_value;
 }
 
-bool c_PDOStatement::t_bindvalue(CVarRef paramno, CVarRef param,
+bool c_PDOStatement::t_bindvalue(const Variant& paramno, const Variant& param,
                                  int64_t type /* = q_PDO$$PARAM_STR */) {
   return register_bound_param(paramno, param, type, 0, uninit_null(), m_stmt, true);
 }
 
-bool c_PDOStatement::t_bindparam(CVarRef paramno, VRefParam param,
+bool c_PDOStatement::t_bindparam(const Variant& paramno, VRefParam param,
                                  int64_t type /* = q_PDO$$PARAM_STR */,
                                  int64_t max_value_len /* = 0 */,
-                                 CVarRef driver_params /*= null */) {
+                                 const Variant& driver_params /*= null */) {
   return register_bound_param(paramno, ref(param), type, max_value_len,
                               driver_params, m_stmt, true);
 }
 
-bool c_PDOStatement::t_bindcolumn(CVarRef paramno, VRefParam param,
+bool c_PDOStatement::t_bindcolumn(const Variant& paramno, VRefParam param,
                                   int64_t type /* = q_PDO$$PARAM_STR */,
                                   int64_t max_value_len /* = 0 */,
-                                  CVarRef driver_params /* = null */) {
+                                  const Variant& driver_params /* = null */) {
   return register_bound_param(paramno, ref(param), type, max_value_len,
                               driver_params, m_stmt, false);
 }
@@ -2956,7 +2960,7 @@ Array c_PDOStatement::t_errorinfo() {
   return ret;
 }
 
-Variant c_PDOStatement::t_setattribute(int64_t attribute, CVarRef value) {
+Variant c_PDOStatement::t_setattribute(int64_t attribute, const Variant& value) {
   if (!m_stmt->support(PDOStatement::MethodSetAttribute)) {
     pdo_raise_impl_error(m_stmt->dbh, m_stmt, "IM001",
                          "This driver doesn't support setting attributes");
@@ -3044,7 +3048,7 @@ Variant c_PDOStatement::t_getcolumnmeta(int64_t column) {
 }
 
 bool c_PDOStatement::t_setfetchmode(int _argc, int64_t mode,
-                                    CArrRef _argv /* = null_array */) {
+                                    const Array& _argv /* = null_array */) {
   return pdo_stmt_set_fetch_mode(m_stmt, _argc, mode, _argv);
 }
 

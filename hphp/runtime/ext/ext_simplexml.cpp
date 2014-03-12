@@ -16,12 +16,14 @@
 */
 
 #include "hphp/runtime/ext/ext_simplexml.h"
+#include <vector>
 #include "hphp/runtime/ext/ext_file.h"
 #include "hphp/runtime/ext/ext_class.h"
 #include "hphp/runtime/ext/ext_domdocument.h"
 #include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/system/systemlib.h"
+#include "hphp/runtime/base/request-event-handler.h"
 
 namespace HPHP {
 
@@ -304,7 +306,7 @@ static Variant cast_object(char* contents, int type) {
   return obj;
 }
 
-static Object sxe_prop_dim_read(c_SimpleXMLElement* sxe, CVarRef member,
+static Object sxe_prop_dim_read(c_SimpleXMLElement* sxe, const Variant& member,
                                 bool elements, bool attribs) {
   xmlNodePtr node = sxe->node;
 
@@ -407,17 +409,9 @@ static Object sxe_prop_dim_read(c_SimpleXMLElement* sxe, CVarRef member,
         if (node) {
           return_value = _node_as_zval(sxe, node, SXE_ITER_NONE, nullptr,
                                        sxe->iter.nsprefix, sxe->iter.isprefix);
-        } else {
-          if (!member.isNull() && cnt < member.toInt64()) {
-            raise_warning("Cannot add element %s number %" PRId64 " when "
-                          "only %ld such elements exist", mynode->name,
-                          member.toInt64(), cnt);
-          }
-          node = xmlNewTextChild(mynode->parent, mynode->ns, mynode->name,
-                                 nullptr);
-          return_value = _node_as_zval(sxe, node, SXE_ITER_NONE, nullptr,
-                                       sxe->iter.nsprefix, sxe->iter.isprefix);
         }
+        // Zend would check here if this is a write operation, but HHVM always
+        // handles that with offsetSet so we just want to return nullptr here.
       } else {
 #if SXE_ELEMENT_BY_NAME
         int newtype;
@@ -439,7 +433,7 @@ static Object sxe_prop_dim_read(c_SimpleXMLElement* sxe, CVarRef member,
   return return_value;
 }
 
-static void change_node_zval(xmlNodePtr node, CVarRef value) {
+static void change_node_zval(xmlNodePtr node, const Variant& value) {
   if (value.isNull()) {
     xmlNodeSetContentLen(node, (xmlChar*)"", 0);
     return;
@@ -461,7 +455,7 @@ static void change_node_zval(xmlNodePtr node, CVarRef value) {
   }
 }
 
-static void sxe_prop_dim_delete(c_SimpleXMLElement* sxe, CVarRef member,
+static void sxe_prop_dim_delete(c_SimpleXMLElement* sxe, const Variant& member,
                                 bool elements, bool attribs) {
   xmlNodePtr node = sxe->node;
 
@@ -551,7 +545,7 @@ next_iter:
   }
 }
 
-static bool sxe_prop_dim_exists(c_SimpleXMLElement* sxe, CVarRef member,
+static bool sxe_prop_dim_exists(c_SimpleXMLElement* sxe, const Variant& member,
                                 bool check_empty, bool elements, bool attribs) {
   xmlNodePtr node = sxe->node;
 
@@ -694,7 +688,7 @@ static Variant _get_base_node_value(c_SimpleXMLElement* sxe_ref,
   return uninit_null();
 }
 
-static void sxe_properties_add(Array& rv, char* name, CVarRef value) {
+static void sxe_properties_add(Array& rv, char* name, const Variant& value) {
   String sName = String(name);
   if (rv.exists(sName)) {
     Variant existVal = rv[sName];
@@ -859,8 +853,8 @@ static Variant sxe_object_cast(c_SimpleXMLElement* sxe, int8_t type) {
   return obj;
 }
 
-static bool sxe_prop_dim_write(c_SimpleXMLElement* sxe, CVarRef member,
-                               CVarRef value, bool elements, bool attribs,
+static bool sxe_prop_dim_write(c_SimpleXMLElement* sxe, const Variant& member,
+                               const Variant& value, bool elements, bool attribs,
                                xmlNodePtr* pnewnode) {
   xmlNodePtr node = sxe->node;
 
@@ -1086,7 +1080,7 @@ static Class* class_from_name(const String& class_name, const char* callee) {
 }
 
 Variant f_simplexml_import_dom(
-  CObjRef node,
+  const Object& node,
   const String& class_name /* = "SimpleXMLElement" */) {
   c_DOMNode *domnode = node.getTyped<c_DOMNode>();
   xmlNodePtr nodep = domnode->m_node;
@@ -1632,19 +1626,19 @@ int64_t c_SimpleXMLElement::t_count() {
 ///////////////////////////////////////////////////////////////////////////////
 // ArrayAccess
 
-bool c_SimpleXMLElement::t_offsetexists(CVarRef index) {
+bool c_SimpleXMLElement::t_offsetexists(const Variant& index) {
   return sxe_prop_dim_exists(this, index, false, false, true);
 }
 
-Variant c_SimpleXMLElement::t_offsetget(CVarRef index) {
+Variant c_SimpleXMLElement::t_offsetget(const Variant& index) {
   return sxe_prop_dim_read(this, index, false, true);
 }
 
-void c_SimpleXMLElement::t_offsetset(CVarRef index, CVarRef newvalue) {
+void c_SimpleXMLElement::t_offsetset(const Variant& index, const Variant& newvalue) {
   sxe_prop_dim_write(this, index, newvalue, false, true, nullptr);
 }
 
-void c_SimpleXMLElement::t_offsetunset(CVarRef index) {
+void c_SimpleXMLElement::t_offsetunset(const Variant& index) {
   sxe_prop_dim_delete(this, index, false, true);
 }
 
@@ -1731,15 +1725,14 @@ public:
   }
 };
 
-class LibXmlErrors : public RequestEventHandler {
-public:
-  virtual void requestInit() {
+struct LibXmlErrors final : RequestEventHandler {
+  void requestInit() override {
     m_use_error = false;
     m_errors.reset();
     m_entity_loader_disabled = false;
     xmlParserInputBufferCreateFilenameDefault(hphp_libxml_input_buffer);
   }
-  virtual void requestShutdown() {
+  void requestShutdown() override {
     m_use_error = false;
     m_errors.reset();
   }
@@ -1811,6 +1804,8 @@ static Object create_libxmlerror(xmlError &error) {
   return ret;
 }
 
+IMPLEMENT_DEFAULT_EXTENSION_VERSION(libxml, NO_EXTENSION_VERSION_YET);
+
 Variant f_libxml_get_errors() {
   xmlErrorVec* error_list = &s_libxml_errors->m_errors;
   Array ret = Array::Create();
@@ -1833,17 +1828,15 @@ void f_libxml_clear_errors() {
   s_libxml_errors->m_errors.reset();
 }
 
-bool f_libxml_use_internal_errors(CVarRef use_errors /* = null_variant */) {
+bool f_libxml_use_internal_errors(bool use_errors) {
   bool ret = (xmlStructuredError == libxml_error_handler);
-  if (!use_errors.isNull()) {
-    if (!use_errors.toBoolean()) {
-      xmlSetStructuredErrorFunc(nullptr, nullptr);
-      s_libxml_errors->m_use_error = false;
-      s_libxml_errors->m_errors.reset();
-    } else {
-      xmlSetStructuredErrorFunc(nullptr, libxml_error_handler);
-      s_libxml_errors->m_use_error = true;
-    }
+  if (!use_errors) {
+    xmlSetStructuredErrorFunc(nullptr, nullptr);
+    s_libxml_errors->m_use_error = false;
+    s_libxml_errors->m_errors.reset();
+  } else {
+    xmlSetStructuredErrorFunc(nullptr, libxml_error_handler);
+    s_libxml_errors->m_use_error = true;
   }
   return ret;
 }

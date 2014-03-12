@@ -26,6 +26,8 @@
 #include <curl/curl.h>
 #include <curl/easy.h>
 #include <curl/multi.h>
+#include <memory>
+#include <vector>
 
 #define CURLOPT_RETURNTRANSFER 19913
 #define CURLOPT_BINARYTRANSFER 19914
@@ -301,7 +303,7 @@ public:
     return String();
   }
 
-  bool setOption(long option, CVarRef value) {
+  bool setOption(long option, const Variant& value) {
     if (m_cp == nullptr) {
       return false;
     }
@@ -474,6 +476,11 @@ public:
       m_write_header.callback = value;
       m_write_header.method = PHP_CURL_USER;
       break;
+    case CURLOPT_PROGRESSFUNCTION:
+      m_progress_callback = value;
+      curl_easy_setopt(m_cp, CURLOPT_PROGRESSDATA, (void*) this);
+      curl_easy_setopt(m_cp, CURLOPT_PROGRESSFUNCTION, curl_progress);
+      break;
     case CURLOPT_POSTFIELDS:
       m_emptyPost = false;
       if (value.is(KindOfArray) || value.is(KindOfObject)) {
@@ -485,17 +492,49 @@ public:
           String val = iter.second().toString();
           const char *postval = val.data();
 
-          /* The arguments after _NAMELENGTH and _CONTENTSLENGTH
-           * must be explicitly cast to long in curl_formadd
-           * use since curl needs a long not an int. */
           if (*postval == '@') {
+            /* Given a string like:
+             *   "@/foo/bar;type=herp/derp;filename=ponies\0"
+             * - Temporarily convert to:
+             *   "@/foo/bar\0type=herp/derp\0filename=ponies\0"
+             * - Pass pointers to the relevant null-terminated substrings to
+             *   curl_formadd
+             * - Revert changes to postval at the end
+             */
+            char* mutablePostval = const_cast<char*>(postval);
+            char* type = strstr(mutablePostval, ";type=");
+            char* filename = strstr(mutablePostval, ";filename=");
+
+            if (type) {
+              *type = '\0';
+            }
+            if (filename) {
+              *filename = '\0';
+            }
+
+            /* The arguments after _NAMELENGTH and _CONTENTSLENGTH
+             * must be explicitly cast to long in curl_formadd
+             * use since curl needs a long not an int. */
             ++postval;
             m_error_no = (CURLcode)curl_formadd
               (&first, &last,
                CURLFORM_COPYNAME, key.data(),
                CURLFORM_NAMELENGTH, (long)key.size(),
+               CURLFORM_FILENAME, filename
+                                  ? filename + sizeof(";filename=") - 1
+                                  : postval,
+               CURLFORM_CONTENTTYPE, type
+                                     ? type + sizeof(";type=") - 1
+                                     : "application/octet-stream",
                CURLFORM_FILE, postval,
                CURLFORM_END);
+
+            if (type) {
+              *type = ';';
+            }
+            if (filename) {
+              *filename = ';';
+            }
           } else {
             m_error_no = (CURLcode)curl_formadd
               (&first, &last,
@@ -631,7 +670,7 @@ public:
     return 0;
   }
 
-  Variant do_callback(CVarRef cb, CArrRef args) {
+  Variant do_callback(const Variant& cb, const Array& args) {
     assert(!m_exception);
     try {
       return vm_call_user_func(cb, args);
@@ -645,6 +684,28 @@ public:
       m_phpException = false;
     }
     return uninit_null();
+  }
+
+  static int curl_progress(void* p,
+                           double dltotal, double dlnow,
+                           double ultotal, double ulnow) {
+    assert(p);
+    CurlResource* curl = static_cast<CurlResource*>(p);
+
+    ArrayInit ai(5);
+    ai.set(Resource(curl));
+    ai.set(dltotal);
+    ai.set(dlnow);
+    ai.set(ultotal);
+    ai.set(ulnow);
+
+    Variant result = vm_call_user_func(
+      curl->m_progress_callback,
+      ai.toArray()
+    );
+    // Both PHP and libcurl are documented as return 0 to continue, non-zero
+    // to abort, however this is what Zend actually implements
+    return result.toInt64() == 0 ? 0 : 1;
   }
 
   static size_t curl_read(char *data, size_t size, size_t nmemb, void *ctx) {
@@ -781,6 +842,7 @@ private:
   WriteHandler m_write;
   WriteHandler m_write_header;
   ReadHandler  m_read;
+  Variant      m_progress_callback;
 
   bool m_phpException;
   bool m_emptyPost;
@@ -866,7 +928,7 @@ CURLcode CurlResource::ssl_ctx_callback(CURL *curl, void *sslctx, void *parm) {
     return false;                                                           \
   }                                                                         \
 
-Variant HHVM_FUNCTION(curl_init, CVarRef url /* = null_string */) {
+Variant HHVM_FUNCTION(curl_init, const Variant& url /* = null_string */) {
   if (url.isNull()) {
     return NEWOBJ(CurlResource)(null_string);
   } else {
@@ -874,7 +936,7 @@ Variant HHVM_FUNCTION(curl_init, CVarRef url /* = null_string */) {
   }
 }
 
-Variant HHVM_FUNCTION(curl_copy_handle, CResRef ch) {
+Variant HHVM_FUNCTION(curl_copy_handle, const Resource& ch) {
   CHECK_RESOURCE(curl);
   return NEWOBJ(CurlResource)(curl);
 }
@@ -916,12 +978,12 @@ Variant HHVM_FUNCTION(curl_version, int uversion /* = k_CURLVERSION_NOW */) {
   return ret.create();
 }
 
-bool HHVM_FUNCTION(curl_setopt, CResRef ch, int option, CVarRef value) {
+bool HHVM_FUNCTION(curl_setopt, const Resource& ch, int option, const Variant& value) {
   CHECK_RESOURCE(curl);
   return curl->setOption(option, value);
 }
 
-bool HHVM_FUNCTION(curl_setopt_array, CResRef ch, CArrRef options) {
+bool HHVM_FUNCTION(curl_setopt_array, const Resource& ch, const Array& options) {
   CHECK_RESOURCE(curl);
   for (ArrayIter iter(options); iter; ++iter) {
     if (!curl->setOption(iter.first().toInt32(), iter.second())) {
@@ -931,12 +993,12 @@ bool HHVM_FUNCTION(curl_setopt_array, CResRef ch, CArrRef options) {
   return true;
 }
 
-Variant HHVM_FUNCTION(fb_curl_getopt, CResRef ch, int64_t opt /* = 0 */) {
+Variant HHVM_FUNCTION(fb_curl_getopt, const Resource& ch, int64_t opt /* = 0 */) {
   CHECK_RESOURCE(curl);
   return curl->getOption(opt);
 }
 
-Variant HHVM_FUNCTION(curl_exec, CResRef ch) {
+Variant HHVM_FUNCTION(curl_exec, const Resource& ch) {
   CHECK_RESOURCE(curl);
   return curl->execute();
 }
@@ -965,7 +1027,7 @@ const StaticString
   s_redirect_time("redirect_time"),
   s_request_header("request_header");
 
-Variant HHVM_FUNCTION(curl_getinfo, CResRef ch, int opt /* = 0 */) {
+Variant HHVM_FUNCTION(curl_getinfo, const Resource& ch, int opt /* = 0 */) {
   CHECK_RESOURCE(curl);
   CURL *cp = curl->get();
 
@@ -1113,17 +1175,17 @@ Variant HHVM_FUNCTION(curl_getinfo, CResRef ch, int opt /* = 0 */) {
   return uninit_null();
 }
 
-Variant HHVM_FUNCTION(curl_errno, CResRef ch) {
+Variant HHVM_FUNCTION(curl_errno, const Resource& ch) {
   CHECK_RESOURCE(curl);
   return curl->getError();
 }
 
-Variant HHVM_FUNCTION(curl_error, CResRef ch) {
+Variant HHVM_FUNCTION(curl_error, const Resource& ch) {
   CHECK_RESOURCE(curl);
   return curl->getErrorString();
 }
 
-Variant HHVM_FUNCTION(curl_close, CResRef ch) {
+Variant HHVM_FUNCTION(curl_close, const Resource& ch) {
   CHECK_RESOURCE(curl);
   curl->close();
   return uninit_null();
@@ -1155,7 +1217,7 @@ public:
     }
   }
 
-  void add(CResRef ch) {
+  void add(const Resource& ch) {
     m_easyh.append(ch);
   }
 
@@ -1237,21 +1299,21 @@ Resource HHVM_FUNCTION(curl_multi_init) {
   return NEWOBJ(CurlMultiResource)();
 }
 
-Variant HHVM_FUNCTION(curl_multi_add_handle, CResRef mh, CResRef ch) {
+Variant HHVM_FUNCTION(curl_multi_add_handle, const Resource& mh, const Resource& ch) {
   CHECK_MULTI_RESOURCE(curlm);
   CurlResource *curle = ch.getTyped<CurlResource>();
   curlm->add(ch);
   return curl_multi_add_handle(curlm->get(), curle->get());
 }
 
-Variant HHVM_FUNCTION(curl_multi_remove_handle, CResRef mh, CResRef ch) {
+Variant HHVM_FUNCTION(curl_multi_remove_handle, const Resource& mh, const Resource& ch) {
   CHECK_MULTI_RESOURCE(curlm);
   CurlResource *curle = ch.getTyped<CurlResource>();
   curlm->remove(curle);
   return curl_multi_remove_handle(curlm->get(), curle->get());
 }
 
-Variant HHVM_FUNCTION(curl_multi_exec, CResRef mh, VRefParam still_running) {
+Variant HHVM_FUNCTION(curl_multi_exec, const Resource& mh, VRefParam still_running) {
   CHECK_MULTI_RESOURCE(curlm);
   int running = 0;
   IOStatusHelper io("curl_multi_exec");
@@ -1308,7 +1370,7 @@ static void hphp_curl_multi_select(CURLM *mh, int timeout_ms, int *ret) {
 #define curl_multi_select_func curl_multi_select
 #endif
 
-Variant HHVM_FUNCTION(curl_multi_select, CResRef mh,
+Variant HHVM_FUNCTION(curl_multi_select, const Resource& mh,
                                          double timeout /* = 1.0 */) {
   CHECK_MULTI_RESOURCE(curlm);
   int ret;
@@ -1318,7 +1380,7 @@ Variant HHVM_FUNCTION(curl_multi_select, CResRef mh,
   return ret;
 }
 
-Variant HHVM_FUNCTION(curl_multi_getcontent, CResRef ch) {
+Variant HHVM_FUNCTION(curl_multi_getcontent, const Resource& ch) {
   CHECK_RESOURCE(curl);
   return curl->getContents();
 }
@@ -1334,7 +1396,7 @@ Array curl_convert_fd_to_stream(fd_set *fd, int max_fd) {
   return ret;
 }
 
-Variant HHVM_FUNCTION(fb_curl_multi_fdset, CResRef mh,
+Variant HHVM_FUNCTION(fb_curl_multi_fdset, const Resource& mh,
                               VRefParam read_fd_set,
                               VRefParam write_fd_set,
                               VRefParam exc_fd_set,
@@ -1366,7 +1428,7 @@ const StaticString
   s_headers("headers"),
   s_requests("requests");
 
-Variant HHVM_FUNCTION(curl_multi_info_read, CResRef mh,
+Variant HHVM_FUNCTION(curl_multi_info_read, const Resource& mh,
                                VRefParam msgs_in_queue /* = null */) {
   CHECK_MULTI_RESOURCE(curlm);
 
@@ -1388,7 +1450,7 @@ Variant HHVM_FUNCTION(curl_multi_info_read, CResRef mh,
   return ret;
 }
 
-Variant HHVM_FUNCTION(curl_multi_close, CResRef mh) {
+Variant HHVM_FUNCTION(curl_multi_close, const Resource& mh) {
   CHECK_MULTI_RESOURCE(curlm);
   curlm->close();
   return uninit_null();
@@ -1419,7 +1481,7 @@ public:
 IMPLEMENT_OBJECT_ALLOCATION(LibEventHttpHandle)
 
 static LibEventHttpClientPtr prepare_client
-(const String& url, const String& data, CVarRef headers, int timeout,
+(const String& url, const String& data, const Variant& headers, int timeout,
  bool async, bool post) {
   std::string sUrl = url.data();
   if (sUrl.size() < 7 || sUrl.substr(0, 7) != "http://") {
@@ -1502,7 +1564,7 @@ void HHVM_FUNCTION(evhttp_set_cache, const String& address, int max_conn,
 }
 
 Variant HHVM_FUNCTION(evhttp_get, const String& url,
-                                  CVarRef headers /* = null_array */,
+                                  const Variant& headers /* = null_array */,
                                   int timeout /* = 5 */) {
   if (RuntimeOption::ServerHttpSafeMode) {
     throw_fatal("evhttp_set_cache is disabled");
@@ -1518,7 +1580,7 @@ Variant HHVM_FUNCTION(evhttp_get, const String& url,
 }
 
 Variant HHVM_FUNCTION(evhttp_post, const String& url, const String& data,
-                      CVarRef headers /* = null_array */,
+                      const Variant& headers /* = null_array */,
                       int timeout /* = 5 */) {
   if (RuntimeOption::ServerHttpSafeMode) {
     throw_fatal("evhttp_post is disabled");
@@ -1534,7 +1596,7 @@ Variant HHVM_FUNCTION(evhttp_post, const String& url, const String& data,
 }
 
 Variant HHVM_FUNCTION(evhttp_async_get, const String& url,
-                           CVarRef headers /* = null_array */,
+                           const Variant& headers /* = null_array */,
                            int timeout /* = 5 */) {
   if (RuntimeOption::ServerHttpSafeMode) {
     throw_fatal("evhttp_async_get is disabled");
@@ -1548,7 +1610,7 @@ Variant HHVM_FUNCTION(evhttp_async_get, const String& url,
 }
 
 Variant HHVM_FUNCTION(evhttp_async_post, const String& url, const String& data,
-                            CVarRef headers /* = null_array */,
+                            const Variant& headers /* = null_array */,
                             int timeout /* = 5 */) {
   if (RuntimeOption::ServerHttpSafeMode) {
     throw_fatal("evhttp_async_post is disabled");
@@ -1561,7 +1623,7 @@ Variant HHVM_FUNCTION(evhttp_async_post, const String& url, const String& data,
   return false;
 }
 
-Variant HHVM_FUNCTION(evhttp_recv, CResRef handle) {
+Variant HHVM_FUNCTION(evhttp_recv, const Resource& handle) {
   if (RuntimeOption::ServerHttpSafeMode) {
     throw_fatal("evhttp_recv is disabled");
   }
@@ -1757,6 +1819,8 @@ const int64_t k_CURLOPT_POSTFIELDS = CURLOPT_POSTFIELDS;
 const int64_t k_CURLOPT_POSTREDIR = CURLOPT_POSTREDIR;
 const int64_t k_CURLOPT_POSTQUOTE = CURLOPT_POSTQUOTE;
 const int64_t k_CURLOPT_PRIVATE = CURLOPT_PRIVATE;
+const int64_t k_CURLOPT_PROGRESSDATA = CURLOPT_PROGRESSDATA;
+const int64_t k_CURLOPT_PROGRESSFUNCTION = CURLOPT_PROGRESSFUNCTION;
 const int64_t k_CURLOPT_PROXY = CURLOPT_PROXY;
 const int64_t k_CURLOPT_PROXYAUTH = CURLOPT_PROXYAUTH;
 const int64_t k_CURLOPT_PROXYPORT = CURLOPT_PROXYPORT;
@@ -2019,6 +2083,7 @@ const StaticString s_CURLOPT_POSTFIELDS("CURLOPT_POSTFIELDS");
 const StaticString s_CURLOPT_POSTREDIR("CURLOPT_POSTREDIR");
 const StaticString s_CURLOPT_POSTQUOTE("CURLOPT_POSTQUOTE");
 const StaticString s_CURLOPT_PRIVATE("CURLOPT_PRIVATE");
+const StaticString s_CURLOPT_PROGRESSFUNCTION("CURLOPT_PROGRESSFUNCTION");
 const StaticString s_CURLOPT_PROXY("CURLOPT_PROXY");
 const StaticString s_CURLOPT_PROXYAUTH("CURLOPT_PROXYAUTH");
 const StaticString s_CURLOPT_PROXYPORT("CURLOPT_PROXYPORT");
@@ -2619,6 +2684,9 @@ class CurlExtension : public Extension {
     );
     Native::registerConstant<KindOfInt64>(
       s_CURLOPT_PRIVATE.get(), k_CURLOPT_PRIVATE
+    );
+    Native::registerConstant<KindOfInt64>(
+      s_CURLOPT_PROGRESSFUNCTION.get(), k_CURLOPT_PROGRESSFUNCTION
     );
     Native::registerConstant<KindOfInt64>(
       s_CURLOPT_PROXY.get(), k_CURLOPT_PROXY

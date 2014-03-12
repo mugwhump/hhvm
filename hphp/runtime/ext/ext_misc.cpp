@@ -16,6 +16,7 @@
 */
 
 #include "hphp/runtime/ext/ext_misc.h"
+#include <limits>
 
 #include "hphp/runtime/server/server-stats.h"
 #include "hphp/runtime/base/exceptions.h"
@@ -30,8 +31,70 @@
 #include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
+#include "hphp/util/logger.h"
 
 namespace HPHP {
+
+IMPLEMENT_THREAD_LOCAL(std::string, s_misc_highlight_default_string);
+IMPLEMENT_THREAD_LOCAL(std::string, s_misc_highlight_default_comment);
+IMPLEMENT_THREAD_LOCAL(std::string, s_misc_highlight_default_keyword);
+IMPLEMENT_THREAD_LOCAL(std::string, s_misc_highlight_default_default);
+IMPLEMENT_THREAD_LOCAL(std::string, s_misc_highlight_default_html);
+IMPLEMENT_THREAD_LOCAL(std::string, s_misc_display_errors);
+
+const std::string s_1("1"), s_2("2"), s_stdout("stdout"), s_stderr("stderr");
+
+static class MiscExtension : public Extension {
+public:
+  MiscExtension() : Extension("misc", k_PHP_VERSION.c_str()) { }
+  void threadInit() {
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "highlight.string", "#DD0000",
+      s_misc_highlight_default_string.get()
+    );
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "highlight.comment", "#FF8000",
+      s_misc_highlight_default_comment.get()
+    );
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "highlight.keyword", "#007700",
+      s_misc_highlight_default_keyword.get()
+    );
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "highlight.default", "#0000BB",
+      s_misc_highlight_default_default.get()
+    );
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "highlight.html", "#000000",
+      s_misc_highlight_default_html.get()
+    );
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "display_errors", "1",
+      IniSetting::SetAndGet<std::string>(
+        [](const std::string& value) {
+          if (value == s_1 || value == s_stdout) {
+            Logger::SetStandardOut(stdout);
+            return true;
+          }
+          if (value == s_2 || value == s_stderr) {
+            Logger::SetStandardOut(stderr);
+            return true;
+          }
+          return false;
+        },
+        nullptr
+      ),
+      s_misc_display_errors.get()
+    );
+  }
+
+} s_misc_extension;
 
 using JIT::CallerFrame;
 
@@ -67,13 +130,13 @@ static Class* getClassByName(const char* name, int len) {
   Class* cls = nullptr;
   // translate "self" or "parent"
   if (len == 4 && !memcmp(name, "self", 4)) {
-    cls = g_vmContext->getContextClass();
+    cls = g_context->getContextClass();
     if (!cls) {
       throw FatalErrorException("Cannot access self:: "
                                 "when no class scope is active");
     }
   } else if (len == 6 && !memcmp(name, "parent", 6)) {
-    cls = g_vmContext->getParentContextClass();
+    cls = g_context->getParentContextClass();
     if (!cls) {
       throw FatalErrorException("Cannot access parent");
     }
@@ -125,7 +188,7 @@ Variant f_constant(const String& name) {
   return uninit_null();
 }
 
-bool f_define(const String& name, CVarRef value,
+bool f_define(const String& name, const Variant& value,
               bool case_insensitive /* = false */) {
   if (case_insensitive) {
     raise_warning(Strings::CONSTANTS_CASE_SENSITIVE);
@@ -155,11 +218,11 @@ bool f_defined(const String& name, bool autoload /* = true */) {
   }
 }
 
-Variant f_die(CVarRef status /* = null_variant */) {
+Variant f_die(const Variant& status /* = null_variant */) {
   return f_exit(status);
 }
 
-Variant f_exit(CVarRef status /* = null_variant */) {
+Variant f_exit(const Variant& status /* = null_variant */) {
   if (status.isString()) {
     echo(status.toString());
     throw ExitException(0);
@@ -175,7 +238,7 @@ int64_t f_ignore_user_abort(bool setting /* = false */) {
   return 0;
 }
 
-Variant f_pack(int _argc, const String& format, CArrRef _argv /* = null_array */) {
+Variant f_pack(int _argc, const String& format, const Array& _argv /* = null_array */) {
   return ZendPack().pack(format, _argv);
 }
 
@@ -576,7 +639,7 @@ String f_token_name(int64_t token) {
   return "UNKNOWN";
 }
 
-String f_hphp_to_string(CVarRef v) {
+String f_hphp_to_string(const Variant& v) {
   return v.toString();
 }
 

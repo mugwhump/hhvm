@@ -21,6 +21,8 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <poll.h>
+#include <algorithm>
+#include <vector>
 
 #include "folly/ScopeGuard.h"
 #include "folly/String.h"
@@ -28,6 +30,7 @@
 #include "hphp/util/network.h"
 #include "hphp/util/timer.h"
 #include "hphp/util/db-mysql.h"
+#include "hphp/util/text-util.h"
 
 #include "hphp/runtime/base/extended-logger.h"
 #include "hphp/runtime/base/request-local.h"
@@ -40,6 +43,7 @@
 #include "hphp/runtime/server/server-stats.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/system/systemlib.h"
+#include "hphp/runtime/base/persistent-resource-store.h"
 
 namespace HPHP {
 
@@ -71,7 +75,7 @@ IMPLEMENT_STATIC_REQUEST_LOCAL(MySQLRequestData, s_mysql_data);
 
 int MySQL::s_default_port = 0;
 
-MySQL *MySQL::Get(CVarRef link_identifier) {
+MySQL *MySQL::Get(const Variant& link_identifier) {
   if (link_identifier.isNull()) {
     return GetDefaultConn();
   }
@@ -81,7 +85,7 @@ MySQL *MySQL::Get(CVarRef link_identifier) {
   return mysql;
 }
 
-MYSQL *MySQL::GetConn(CVarRef link_identifier, MySQL **rconn /* = NULL */) {
+MYSQL *MySQL::GetConn(const Variant& link_identifier, MySQL **rconn /* = NULL */) {
   MySQL *mySQL = Get(link_identifier);
   MYSQL *ret = nullptr;
   if (mySQL) {
@@ -102,7 +106,7 @@ MYSQL *MySQL::GetConn(CVarRef link_identifier, MySQL **rconn /* = NULL */) {
   return ret;
 }
 
-bool MySQL::CloseConn(CVarRef link_identifier) {
+bool MySQL::CloseConn(const Variant& link_identifier) {
   MySQL *mySQL = Get(link_identifier);
   if (mySQL && !mySQL->isPersistent()) {
     mySQL->close();
@@ -147,7 +151,7 @@ MySQL *MySQL::GetCachedImpl(const char *name, const String& host, int port,
                             const String& socket, const String& username,
                             const String& password, int client_flags) {
   String key = GetHash(host, port, socket, username, password, client_flags);
-  return dynamic_cast<MySQL*>(g_persistentObjects->get(name, key.data()));
+  return dynamic_cast<MySQL*>(g_persistentResources->get(name, key.data()));
 }
 
 void MySQL::SetCachedImpl(const char *name, const String& host, int port,
@@ -155,7 +159,7 @@ void MySQL::SetCachedImpl(const char *name, const String& host, int port,
                           const String& password, int client_flags,
                           MySQL *conn) {
   String key = GetHash(host, port, socket, username, password, client_flags);
-  g_persistentObjects->set(name, key.data(), conn);
+  g_persistentResources->set(name, key.data(), conn);
 }
 
 MySQL *MySQL::GetDefaultConn() {
@@ -329,7 +333,7 @@ bool MySQL::reconnect(const String& host, int port, const String& socket,
 ///////////////////////////////////////////////////////////////////////////////
 // helpers
 
-MySQLResult *php_mysql_extract_result(CVarRef result) {
+MySQLResult *php_mysql_extract_result(const Variant& result) {
   MySQLResult *res = result.toResource().getTyped<MySQLResult>
     (!RuntimeOption::ThrowBadTypeExceptions,
      !RuntimeOption::ThrowBadTypeExceptions);
@@ -386,7 +390,7 @@ const char *php_mysql_get_field_name(int field_type) {
   return "unknown";
 }
 
-Variant php_mysql_field_info(CVarRef result, int field, int entry_type) {
+Variant php_mysql_field_info(const Variant& result, int field, int entry_type) {
   MySQLResult *res = php_mysql_extract_result(result);
   if (res == NULL) return false;
 
@@ -523,7 +527,7 @@ Variant php_mysql_do_connect_on_link(MySQL* mySQL, String server,
     server = server.substr(0, slash_pos - 1);
   }
 
-  Util::HostURL hosturl(std::string(server), MySQL::GetDefaultPort());
+  HostURL hosturl(std::string(server), MySQL::GetDefaultPort());
   if (hosturl.isValid()) {
     host = hosturl.getHost();
     port = hosturl.getPort();
@@ -639,13 +643,18 @@ void MySQLResult::setFieldCount(int64_t fields) {
 
 void MySQLResult::setFieldInfo(int64_t f, MYSQL_FIELD *field) {
   MySQLFieldInfo &info = m_fields[f];
-  info.name = String(field->name, CopyString);
-  info.table = String(field->table, CopyString);
-  info.def = String(field->def, CopyString);
+  info.name       = String(field->name, CopyString);
+  info.org_name   = String(field->org_name, CopyString);
+  info.table      = String(field->table, CopyString);
+  info.org_table  = String(field->org_table, CopyString);
+  info.def        = String(field->def, CopyString);
+  info.db         = String(field->db, CopyString);
   info.max_length = (int64_t)field->max_length;
-  info.length = (int64_t)field->length;
-  info.type = (int)field->type;
-  info.flags = field->flags;
+  info.length     = (int64_t)field->length;
+  info.type       = (int)field->type;
+  info.flags      = field->flags;
+  info.decimals   = field->decimals;
+  info.charsetnr  = field->charsetnr;
 }
 
 MySQLFieldInfo *MySQLResult::getFieldInfo(int64_t field) {
@@ -799,6 +808,7 @@ bool MySQLStmtVariables::bind_result(MYSQL_STMT *stmt) {
         b->buffer_length = sizeof(int64_t);
         break;
       case MYSQL_TYPE_DATE:
+      case MYSQL_TYPE_NEWDATE:
       case MYSQL_TYPE_DATETIME:
       case MYSQL_TYPE_TIMESTAMP:
       case MYSQL_TYPE_TIME:
@@ -820,9 +830,9 @@ bool MySQLStmtVariables::bind_result(MYSQL_STMT *stmt) {
                              fields[i].length;
         break;
       default:
-        // There exists some more types in this enum like MYSQL_TYPE_NEWDATE,
-        // MYSQL_TYPE_TIMESTAMP2, MYSQL_TYPE_DATETIME2, MYSQL_TYPE_TIME2 but
-        // they are just used on the server
+        // There exists some more types in this enum like MYSQL_TYPE_TIMESTAMP2
+        // MYSQL_TYPE_DATETIME2, MYSQL_TYPE_TIME2 but they are just used on the
+        // server
         assert(false);
     }
 
@@ -1156,7 +1166,7 @@ Variant MySQLStmt::result_metadata() {
   Object obj = ObjectData::newInstance(cls);
 
   TypedValue ret;
-  g_vmContext->invokeFunc(&ret, cls->getCtor(), args, obj.get());
+  g_context->invokeFunc(&ret, cls->getCtor(), args, obj.get());
   tvRefcountedDecRef(&ret);
 
   return obj;
@@ -1207,7 +1217,7 @@ unsigned long net_field_length(unsigned char **);
 void free_root(::MEM_ROOT *, int);
 }
 
-static bool php_mysql_read_rows(MYSQL *mysql, CVarRef result) {
+static bool php_mysql_read_rows(MYSQL *mysql, const Variant& result) {
   unsigned long pkt_len;
   unsigned char *cp;
   unsigned int fields = mysql->field_count;
@@ -1276,7 +1286,7 @@ static Variant php_mysql_localize_result(MYSQL *mysql) {
 }
 #endif // FACEBOOK
 
-MySQLQueryReturn php_mysql_do_query(const String& query, CVarRef link_id,
+MySQLQueryReturn php_mysql_do_query(const String& query, const Variant& link_id,
                                     bool async_mode) {
   SYNC_VM_REGS_SCOPED();
   if (mysqlExtension::ReadOnly &&
@@ -1309,8 +1319,8 @@ MySQLQueryReturn php_mysql_do_query(const String& query, CVarRef link_id,
                         q, ref(matches));
     int size = matches.toArray().size();
     if (size > 2) {
-      string verb = Util::toLower(matches[size - 2].toString().data());
-      string table = Util::toLower(matches[size - 1].toString().data());
+      string verb = toLower(matches[size - 2].toString().data());
+      string table = toLower(matches[size - 1].toString().data());
       if (!table.empty() && table[0] == '`') {
         table = table.substr(1, table.length() - 2);
       }
@@ -1336,7 +1346,7 @@ MySQLQueryReturn php_mysql_do_query(const String& query, CVarRef link_id,
                           query, ref(matches));
       size = matches.toArray().size();
       if (size == 2) {
-        string verb = Util::toLower(matches[1].toString().data());
+        string verb = toLower(matches[1].toString().data());
         rconn->m_xaction_count = ((verb == "begin") ? 1 : 0);
         ServerStats::Log(string("sql.query.") + verb, 1);
         if (RuntimeOption::EnableStats && RuntimeOption::EnableSQLTableStats) {
@@ -1413,7 +1423,7 @@ MySQLQueryReturn php_mysql_do_query(const String& query, CVarRef link_id,
   return MySQLQueryReturn::OK_FETCH_RESULT;
 }
 
-Variant php_mysql_get_result(CVarRef link_id, bool use_store) {
+Variant php_mysql_get_result(const Variant& link_id, bool use_store) {
   MySQL *rconn = NULL;
   MYSQL *conn = MySQL::GetConn(link_id, &rconn);
   if (!conn || !rconn) return false;
@@ -1459,7 +1469,7 @@ Variant php_mysql_get_result(CVarRef link_id, bool use_store) {
   return ret;
 }
 
-Variant php_mysql_do_query_and_get_result(const String& query, CVarRef link_id,
+Variant php_mysql_do_query_and_get_result(const String& query, const Variant& link_id,
                                           bool use_store, bool async_mode) {
   MySQLQueryReturn result = php_mysql_do_query(query, link_id, async_mode);
 
@@ -1478,7 +1488,7 @@ Variant php_mysql_do_query_and_get_result(const String& query, CVarRef link_id,
 ///////////////////////////////////////////////////////////////////////////////
 // row operations
 
-Variant php_mysql_fetch_hash(CVarRef result, int result_type) {
+Variant php_mysql_fetch_hash(const Variant& result, int result_type) {
   if ((result_type & PHP_MYSQL_BOTH) == 0) {
     throw_invalid_argument("result_type: %d", result_type);
     return false;
