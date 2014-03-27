@@ -1074,33 +1074,6 @@ bool f_fb_rename_function(const String& orig_func_name, const String& new_func_n
   return true;
 }
 
-/*
-  fb_autoload_map($map, $root) specifies a mapping from classes,
-  functions, constants, and typedefs to the files that define
-  them. The map has the form:
-
-    array('class'    => array('cls' => 'cls_file.php', ...),
-          'function' => array('fun' => 'fun_file.php', ...),
-          'constant' => array('con' => 'con_file.php', ...),
-          'type'     => array('type' => 'type_file.php', ...),
-          'failure' => callable);
-
-    If the 'failure' element exists, it will be called if the
-    lookup in the map fails, or the file cant be included. It
-    takes a kind ('class', 'function' or 'constant') and the
-    name of the entity we're trying to autoload.
-
-  If $root is non empty, it is prepended to every filename
-  (so will typically need to end with '/').
-*/
-
-bool f_fb_autoload_map(const Variant& map, const String& root) {
-  if (map.isArray()) {
-    return AutoloadHandler::s_instance->setMap(map.toCArrRef(), root);
-  }
-  return false;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // call_user_func extensions
 
@@ -1212,40 +1185,14 @@ String f_fb_lazy_realpath(const String& filename) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// const index functions
-
-static Array const_data;
-
-Variant f_fb_const_fetch(const Variant& key) {
-  String k = key.toString();
-  if (ArrayData* ad = const_data.get()) {
-    auto& v = ad->get(k, /*error*/false);
-    if (&v != &null_variant) {
-      return v;
-    }
-  }
-  return Variant(false);
-}
 
 void const_load_set(const String& key, const Variant& value) {
-  const_data.set(key, value, true);
+  // legacy entry point, no longer used.
 }
 
 EXTERNALLY_VISIBLE
 void const_load() {
-  // after all loading
-  const_load_set("zend_array_size", const_data.size());
-  const_data.setEvalScalar();
-}
-
-bool const_dump(const char *filename) {
-  std::ofstream out(filename);
-  if (out.fail()) {
-    return false;
-  }
-  const_data->dump(out);
-  out.close();
-  return true;
+  // legacy entry point, no longer used.
 }
 
 ///////////////////////////////////////////////////////////////////////////////

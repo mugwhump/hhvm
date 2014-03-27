@@ -61,6 +61,7 @@ IMPLEMENT_DEFAULT_EXTENSION_VERSION(dom, 20031129);
 // defined in ext_simplexml.cpp
 extern bool libxml_use_internal_error();
 extern void libxml_add_error(const std::string &msg);
+extern xmlNodePtr simplexml_export_node(c_SimpleXMLElement* sxe);
 
 static void php_libxml_internal_error_handler(int error_type, void *ctx,
                                               const char *fmt,
@@ -5074,7 +5075,7 @@ static void dom_xpath_ext_function_php(xmlXPathParserContextPtr ctxt,
         arg = String(str, CopyString);
         xmlFree(str);
       } else if (type == 2) {
-        arg = Array::Create();
+        Array argArr = Array::Create();
         if (obj->nodesetval && obj->nodesetval->nodeNr > 0) {
           for (int j = 0; j < obj->nodesetval->nodeNr; j++) {
             xmlNodePtr node = obj->nodesetval->nodeTab[j];
@@ -5097,9 +5098,10 @@ static void dom_xpath_ext_function_php(xmlXPathParserContextPtr ctxt,
               node->parent = nsparent;
               node->ns = curns;
             }
-            arg.append(create_node_object(node, intern->m_doc));
+            argArr.append(create_node_object(node, intern->m_doc));
           }
         }
+        arg = Variant(argArr);
       }
       break;
     default:
@@ -5127,7 +5129,8 @@ static void dom_xpath_ext_function_php(xmlXPathParserContextPtr ctxt,
     raise_warning("Not allowed to call handler '%s()'.", handler.data());
   } else {
     Variant retval = vm_call_user_func(handler, args);
-    if (retval.instanceof(c_DOMNode::classof())) {
+    if (retval.isObject() &&
+        retval.getObjectData()->instanceof(c_DOMNode::classof())) {
       if (intern->m_node_list.empty()) {
         intern->m_node_list = Array::Create();
       }
@@ -5825,7 +5828,7 @@ Variant f_dom_xpath_register_php_functions(const Variant& obj,
 Variant f_dom_import_simplexml(const Object& node) {
 
   c_SimpleXMLElement *elem = node.getTyped<c_SimpleXMLElement>();
-  xmlNodePtr nodep = elem->node;
+  xmlNodePtr nodep = simplexml_export_node(elem);
 
   if (nodep && (nodep->type == XML_ELEMENT_NODE ||
                 nodep->type == XML_ATTRIBUTE_NODE)) {

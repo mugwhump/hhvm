@@ -46,17 +46,6 @@ Object::~Object() {
   // force it out of line
 }
 
-ArrayIter Object::begin(const String& context /* = null_string */) const {
-  if (!m_px) throw_null_pointer_exception();
-  return m_px->begin(context);
-}
-
-MutableArrayIter Object::begin(Variant *key, Variant &val,
-                               const String& context /*= null_string*/) const {
-  if (!m_px) throw_null_pointer_exception();
-  return m_px->begin(key, val, context);
-}
-
 Array Object::toArray() const {
   return m_px ? m_px->o_toArray() : Array();
 }
@@ -85,6 +74,10 @@ bool Object::equal(const Object& v2) const {
   if (m_px->isCollection()) {
     return collectionEquals(m_px, v2.get());
   }
+  if (UNLIKELY(m_px->instanceof(SystemLib::s_DateTimeInterfaceClass))) {
+    return c_DateTime::GetTimestamp(*this) ==
+        c_DateTime::GetTimestamp(v2);
+  }
   if (v2.get()->getVMClass() != m_px->getVMClass()) {
     return false;
   }
@@ -96,27 +89,23 @@ bool Object::equal(const Object& v2) const {
     v2->o_getArray(ar2, false);
     return ar1->equal(ar2.get(), false);
   }
-  if (UNLIKELY(m_px->instanceof(c_DateTime::classof()))) {
-    return getTyped<c_DateTime>()->gettimestamp() ==
-        v2.getTyped<c_DateTime>()->gettimestamp();
-  }
   return toArray().equal(v2.toArray());
 }
 
 bool Object::less(const Object& v2) const {
   check_collection_compare(m_px, v2.get());
-  if (UNLIKELY(m_px->instanceof(c_DateTime::classof()))) {
-    return getTyped<c_DateTime>()->gettimestamp() <
-        v2.getTyped<c_DateTime>()->gettimestamp();
+  if (UNLIKELY(m_px->instanceof(SystemLib::s_DateTimeInterfaceClass))) {
+    return c_DateTime::GetTimestamp(*this) <
+        c_DateTime::GetTimestamp(v2);
   }
   return m_px != v2.m_px && toArray().less(v2.toArray());
 }
 
 bool Object::more(const Object& v2) const {
   check_collection_compare(m_px, v2.get());
-  if (UNLIKELY(m_px->instanceof(c_DateTime::classof()))) {
-    return getTyped<c_DateTime>()->gettimestamp() >
-        v2.getTyped<c_DateTime>()->gettimestamp();
+  if (UNLIKELY(m_px->instanceof(SystemLib::s_DateTimeInterfaceClass))) {
+    return c_DateTime::GetTimestamp(*this) >
+        c_DateTime::GetTimestamp(v2);
   }
   return m_px != v2.m_px && toArray().more(v2.toArray());
 }

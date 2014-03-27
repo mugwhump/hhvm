@@ -363,15 +363,19 @@ String f_uniqid(const String& prefix /* = null_string */,
   int sec = (int)tv.tv_sec;
   int usec = (int)(tv.tv_usec % 0x100000);
 
-  char uniqid[256];
+  String uniqid(prefix.size() + 64, ReserveString);
+  auto ptr = uniqid.bufferSlice().ptr;
+  auto capacity = uniqid.get()->capacity();
+  int64_t len;
   if (more_entropy) {
-    snprintf(uniqid, sizeof(uniqid), "%s%08x%05x%.8F",
-             prefix.c_str(), sec, usec, math_combined_lcg() * 10);
+    len = snprintf(ptr, capacity, "%s%08x%05x%.8F",
+                   prefix.c_str(), sec, usec, math_combined_lcg() * 10);
   } else {
-    snprintf(uniqid, sizeof(uniqid), "%s%08x%05x",
-             prefix.c_str(), sec, usec);
+    len = snprintf(ptr, capacity, "%s%08x%05x",
+                   prefix.c_str(), sec, usec);
   }
-  return String(uniqid, CopyString);
+  uniqid.setSize(len);
+  return uniqid;
 }
 
 Variant f_unpack(const String& format, const String& data) {
@@ -562,7 +566,8 @@ const int UserTokenId_T_LAMBDA_OP = 427;
 const int UserTokenId_T_LAMBDA_CP = 428;
 const int UserTokenId_T_UNRESOLVED_OP = 429;
 const int UserTokenId_T_CALLABLE = 430;
-const int MaxUserTokenId = 431; // Marker, not a real user token ID
+const int UserTokenId_T_ONUMBER = 431;
+const int MaxUserTokenId = 432; // Marker, not a real user token ID
 
 #undef YYTOKENTYPE
 #undef YYTOKEN_MAP

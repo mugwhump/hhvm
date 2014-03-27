@@ -97,7 +97,7 @@ namespace {
 // be a const; i.e. it was declared with C(T) instead of S(T).
 struct ConstSrcTable {
   auto static constexpr MaxSrc = 8;
-  bool table[int(Nop)+1][8];
+  bool table[kNumOpcodes][MaxSrc];
   ConstSrcTable() {
     int op = 0;
     int i;
@@ -147,14 +147,14 @@ bool mustUseConst(const IRInstruction& inst, int i) {
   case LdAddr: return check(i == 1); // offset
   case Call: return check(i == 1); // returnBcOffset
   case CallBuiltin: return check(i == 0); // f
-  case LdRaw: return check(i == 1); // offset
-  case StRaw: return check(i == 1); // offset
   default: break;
   }
   return check(g_const_table.mustBeConst(int(inst.op()), i));
 }
 }
 
+bool isI32(int64_t c) { return c == int32_t(c); }
+bool isU32(int64_t c) { return c == uint32_t(c); }
 namespace ARM {
 
 // Return true if the CodeGenerator method for this instruction can
@@ -187,6 +187,20 @@ bool mayUseConst(const IRInstruction& inst, unsigned i) {
       return vixl::Assembler::IsImmArithmetic(cint);
     }
     break;
+  case AddInt:
+  case SubInt:
+  case EqInt:
+  case NeqInt:
+  case LtInt:
+  case GtInt:
+  case LteInt:
+  case GteInt:
+    if (i == 1) {
+      return vixl::Assembler::IsImmArithmetic(cint);
+    }
+    break;
+
+  //TODO: t3944093 add constraints for existing arm codegen
   default:
     break;
   }
@@ -209,8 +223,6 @@ Constraint dstConstraint(const IRInstruction& inst, unsigned i) {
 
 namespace X64 {
 
-bool isI32(int64_t c) { return c == int32_t(c); }
-bool isU32(int64_t c) { return c == uint32_t(c); }
 bool okStore(int64_t c) { return isI32(c); }
 bool okCmp(int64_t c) { return isI32(c); }
 

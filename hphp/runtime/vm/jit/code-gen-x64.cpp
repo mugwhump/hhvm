@@ -66,8 +66,7 @@
 
 using HPHP::JIT::TCA;
 
-namespace HPHP {
-namespace JIT {
+namespace HPHP { namespace JIT { namespace X64 {
 
 TRACE_SET_MOD(hhir);
 
@@ -76,7 +75,6 @@ namespace {
 //////////////////////////////////////////////////////////////////////
 
 using namespace JIT::reg;
-using namespace X64; // XXX: we need to split the x64-specific parts out
 
 /*
  * It's not normally ok to directly use tracelet abi registers in
@@ -85,15 +83,6 @@ using namespace X64; // XXX: we need to split the x64-specific parts out
  * just for some static_assertions relating to calls to helpers from
  * mcg that hardcode these registers.)
  */
-
-const size_t kTypeWordOffset = (offsetof(TypedValue, m_type) % 8);
-const size_t kTypeShiftBits = kTypeWordOffset * CHAR_BIT;
-
-// left shift an immediate DataType, for type, to the correct position
-// within one of the registers used to pass a TypedValue by value.
-uint64_t toDataTypeForCall(Type type) {
-  return uint64_t(type.toDataType()) << kTypeShiftBits;
-}
 
 void cgPunt(const char* file, int line, const char* func, uint32_t bcOff,
             const Func* vmFunc) {
@@ -112,56 +101,6 @@ const char* getContextName(Class* ctx) {
 }
 
 } // unnamed namespace
-
-//////////////////////////////////////////////////////////////////////
-
-ArgDesc::ArgDesc(SSATmp* tmp, const PhysLoc& loc, bool val)
-  : m_imm(-1), m_zeroExtend(false), m_done(false) {
-  if (tmp->isConst()) {
-    // tmp is a constant
-    m_srcReg = InvalidReg;
-    if (val) {
-      m_imm = tmp->type() <= Type::Null ? 0 : tmp->rawVal();
-    } else {
-      m_imm = toDataTypeForCall(tmp->type());
-    }
-    m_kind = Kind::Imm;
-    return;
-  }
-  if (val) {
-    assert(loc.reg(0) != InvalidReg);
-    m_srcReg = loc.reg(0);
-    m_imm = 0;
-    m_kind = Kind::Reg;
-    // zero extend any boolean value that we pass to the helper in case
-    // the helper expects it (e.g., as TypedValue)
-    if (tmp->isA(Type::Bool)) m_zeroExtend = true;
-    return;
-  }
-  if (tmp->numWords() > 1) {
-    assert(loc.reg(1) != InvalidReg);
-    m_srcReg = loc.reg(1);
-    m_imm = 0;
-    // Since val is false then we're passing tmp's type. TypeReg lets
-    // CodeGenerator know that the value might require some massaging
-    // to be in the right format for the call.
-    m_kind = Kind::TypeReg;
-    return;
-  }
-  // arg is the (constant) type of a known-typed value.
-  m_srcReg = InvalidReg;
-  m_imm = toDataTypeForCall(tmp->type());
-  m_kind = Kind::Imm;
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void AsmInfo::updateForInstruction(IRInstruction* inst, TCA start, TCA end) {
-  auto* block = inst->block();
-  instRanges[inst] = TcaRange(start, end);
-  asmRanges[block] = TcaRange(asmRanges[block].start(), end);
-}
-
 //////////////////////////////////////////////////////////////////////
 
 const Func* CodeGenerator::curFunc() const {
@@ -282,7 +221,6 @@ CALL_OPCODE(CreateContMeth)
 CALL_OPCODE(CreateAFWHFunc)
 CALL_OPCODE(CreateAFWHMeth)
 CALL_OPCODE(CreateSRWH)
-CALL_OPCODE(CreateSEWH)
 CALL_OPCODE(NewArray)
 CALL_OPCODE(NewPackedArray)
 CALL_OPCODE(NewCol)
@@ -392,6 +330,11 @@ static void emitFwdJmp(Asm& a, Block* target, CodegenState& state) {
   a.jmp(a.frontier());
   TCA immPtr = a.frontier() - 4;
   prependPatchAddr(state, target, immPtr);
+}
+
+void emitFwdJmp(CodeBlock& cb, Block* target, CodegenState& state) {
+  Asm a { cb };
+  emitFwdJmp(a, target, state);
 }
 
 void CodeGenerator::emitFwdJcc(Asm& a, ConditionCode cc, Block* target) {
@@ -714,6 +657,14 @@ void CodeGenerator::cgSideExitJmpLteInt(IRInstruction* i) { cgExitJccInt(i); }
 void CodeGenerator::cgSideExitJmpEqInt(IRInstruction* i)  { cgExitJccInt(i); }
 void CodeGenerator::cgSideExitJmpNeqInt(IRInstruction* i) { cgExitJccInt(i); }
 
+//////////////////////////////////////////////////////////////////////
+
+void CodeGenerator::cgConjure(IRInstruction* inst) {
+  always_assert(false);
+}
+
+//////////////////////////////////////////////////////////////////////
+
 /**
  * Once the arg sources and dests are all assigned; emit moves and exchanges to
  * put all the args in desired registers. Any arguments that don't fit in
@@ -747,43 +698,111 @@ static int64_t shuffleArgs(Asm& a, ArgGroup& args, CppCall& call) {
     }
   }
 
-  auto const howTo = doRegMoves(moves, rCgGP);
+  // The caller may be using rCgGP directly, or indirectly via m_rScratch.
+  // Carefully avoid using any Assembler macro-instruction that would
+  // clobber rAsm.
+  auto rTmp = rAsm;
 
-  // Execute the plan
-  for (auto& how : howTo) {
-    if (how.m_kind == MoveInfo::Kind::Move) {
-      if (how.m_reg2 == rCgGP) {
-        emitMovRegReg(a, how.m_reg1, how.m_reg2);
-      } else {
-        ArgDesc* argDesc = argDescs[how.m_reg2];
-        if (argDesc == nullptr) {
-          // when no ArgDesc is available is a straight reg to reg swap
-          emitMovRegReg(a, how.m_reg1, how.m_reg2);
+  // Store any arguments past the initial 6 to the stack. This has to happen
+  // before the shuffles below in case the shuffles would clobber any of the
+  // srcRegs here.
+  for (int i = args.numStackArgs() - 1; i >= 0; --i) {
+    auto& arg = args.stk(i);
+    auto srcReg = arg.srcReg();
+    assert(arg.dstReg() == InvalidReg);
+    switch (arg.kind()) {
+      case ArgDesc::Kind::Reg:
+        always_assert(srcReg != rTmp);
+        if (arg.isZeroExtend()) {
+          a.  movzbl(rbyte(srcReg), r32(rTmp));
+          a.  push(rTmp);
         } else {
-          ArgDesc::Kind kind = argDesc->kind();
-          if (kind == ArgDesc::Kind::Reg || kind == ArgDesc::Kind::TypeReg) {
-            if (argDesc->isZeroExtend()) {
-              assert(how.m_reg1.isGP());
-              assert(how.m_reg2.isGP());
-              a. movzbl (rbyte(how.m_reg1), r32(how.m_reg2));
-            } else {
-              emitMovRegReg(a, how.m_reg1, how.m_reg2);
-            }
+          if (srcReg.isSIMD()) {
+            emitMovRegReg(a, srcReg, rTmp);
+            a.push(rTmp);
           } else {
-            assert(kind == ArgDesc::Kind::Addr);
-            assert(how.m_reg1.isGP());
-            assert(how.m_reg2.isGP());
-            a. lea (how.m_reg1[argDesc->imm().q()], how.m_reg2);
-          }
-          if (kind != ArgDesc::Kind::TypeReg) {
-            argDesc->markDone();
+            a.push(srcReg);
           }
         }
+        break;
+
+      case ArgDesc::Kind::TypeReg:
+        static_assert(kTypeWordOffset == 0 || kTypeWordOffset == 1,
+                      "kTypeWordOffset value not supported");
+        always_assert(srcReg != rTmp);
+        assert(srcReg.isGP());
+        // x86 stacks grow down, so push higher offset items first
+        if (kTypeWordOffset == 0) {
+          a.  push (srcReg);
+        } else {
+          // 4 bytes of garbage:
+          a.  pushl(eax);
+          // get the type in the right place in rTmp before pushing it
+          a.  movb (rbyte(srcReg), rbyte(rTmp));
+          a.  shll (CHAR_BIT, r32(rTmp));
+          a.  pushl(r32(rTmp));
+        }
+        break;
+
+      case ArgDesc::Kind::Imm:
+        a.    emitImmReg(arg.imm(), rTmp);
+        a.    push(rTmp);
+        break;
+
+      case ArgDesc::Kind::Addr:
+        a.    lea (arg.srcReg()[arg.imm().l()], rTmp);
+        a.    push(rTmp);
+        break;
+
+      case ArgDesc::Kind::None:
+        a.    push(rax);
+        if (RuntimeOption::EvalHHIRGenerateAsserts) {
+          a.  storeq(0xbadbadbadbadbad, *rsp);
+        }
+        break;
+    }
+  }
+
+  // Execute the plan
+  auto const howTo = doRegMoves(moves, rTmp);
+  for (auto& how : howTo) {
+    switch (how.m_kind) {
+      case MoveInfo::Kind::Move: {
+        if (how.m_dst == rTmp) {
+          emitMovRegReg(a, how.m_src, how.m_dst);
+        } else {
+          ArgDesc* argDesc = argDescs[how.m_dst];
+          if (argDesc == nullptr) {
+            // when no ArgDesc is available is a straight reg to reg copy
+            emitMovRegReg(a, how.m_src, how.m_dst);
+          } else {
+            ArgDesc::Kind kind = argDesc->kind();
+            if (kind == ArgDesc::Kind::Reg || kind == ArgDesc::Kind::TypeReg) {
+              if (argDesc->isZeroExtend()) {
+                assert(how.m_src.isGP());
+                assert(how.m_dst.isGP());
+                a. movzbl (rbyte(how.m_src), r32(how.m_dst));
+              } else {
+                emitMovRegReg(a, how.m_src, how.m_dst);
+              }
+            } else {
+              assert(kind == ArgDesc::Kind::Addr);
+              assert(how.m_src.isGP());
+              assert(how.m_dst.isGP());
+              a. lea (how.m_src[argDesc->imm().q()], how.m_dst);
+            }
+            if (kind != ArgDesc::Kind::TypeReg) {
+              argDesc->markDone();
+            }
+          }
+        }
+        break;
       }
-    } else {
-      assert(how.m_reg1.isGP());
-      assert(how.m_reg2.isGP());
-      a.    xchgq  (how.m_reg1, how.m_reg2);
+    case MoveInfo::Kind::Xchg:
+      assert(how.m_src.isGP());
+      assert(how.m_dst.isGP());
+      a.    xchgq  (how.m_src, how.m_dst);
+      break;
     }
   }
 
@@ -813,60 +832,6 @@ static int64_t shuffleArgs(Asm& a, ArgGroup& args, CppCall& call) {
     }
   }
 
-  // Store any remaining arguments to the stack
-  for (int i = args.numStackArgs() - 1; i >= 0; --i) {
-    auto& arg = args.stk(i);
-    auto srcReg = arg.srcReg();
-    assert(arg.dstReg() == InvalidReg);
-    switch (arg.kind()) {
-      case ArgDesc::Kind::Reg:
-        if (arg.isZeroExtend()) {
-          a.  movzbl(rbyte(srcReg), r32(rCgGP));
-          a.  push(rCgGP);
-        } else {
-          if (srcReg.isSIMD()) {
-            emitMovRegReg(a, srcReg, rCgGP);
-            a.push(rCgGP);
-          } else {
-            a.push(srcReg);
-          }
-        }
-        break;
-
-      case ArgDesc::Kind::TypeReg:
-        static_assert(kTypeWordOffset == 0 || kTypeWordOffset == 1,
-                      "kTypeWordOffset value not supported");
-        assert(srcReg.isGP());
-        // x86 stacks grow down, so push higher offset items first
-        if (kTypeWordOffset == 0) {
-          a.  pushl(eax); // 4 bytes of garbage overlapping m_aux
-          a.  pushl(r32(srcReg));
-        } else {
-          // 4 bytes of garbage:
-          a.  pushl(eax);
-          // get the type in the right place in rCgGP before pushing it
-          a.  movb (rbyte(srcReg), rbyte(rCgGP));
-          a.  shll (CHAR_BIT, r32(rCgGP));
-          a.  pushl(r32(rCgGP));
-        }
-        break;
-
-      case ArgDesc::Kind::Imm:
-        a.    emitImmReg(arg.imm(), rCgGP);
-        a.    push(rCgGP);
-        break;
-
-      case ArgDesc::Kind::Addr:
-        not_implemented();
-
-      case ArgDesc::Kind::None:
-        a.    push(rax);
-        if (RuntimeOption::EvalHHIRGenerateAsserts) {
-          a.  storeq(0xbadbadbadbadbad, *rsp);
-        }
-        break;
-    }
-  }
   return args.numStackArgs() * sizeof(int64_t);
 }
 
@@ -1095,6 +1060,12 @@ void CodeGenerator::cgBinaryIntOp(IRInstruction* inst,
   auto const src2OpReg   = convertReg(src2Reg);
   auto const rOpScratch  = convertReg(m_rScratch);
 
+  auto opWithScratch = [&]() {
+    (a.*movInstr)(src1OpReg, rOpScratch);
+    (a.*instrRR) (src2OpReg, rOpScratch);
+    (a.*movInstr)(rOpScratch, dstOpReg);
+  };
+
   // Two registers.
   if (src1Reg != InvalidReg && src2Reg != InvalidReg) {
     if (dstReg == src1Reg) {
@@ -1103,9 +1074,7 @@ void CodeGenerator::cgBinaryIntOp(IRInstruction* inst,
       if (commutative) {
         (a.*instrRR) (src1OpReg, dstOpReg);
       } else {
-        (a.*movInstr)(src1OpReg, rOpScratch);
-        (a.*instrRR) (src2OpReg, rOpScratch);
-        (a.*movInstr)(rOpScratch, dstOpReg);
+        opWithScratch();
       }
     } else {
       emitMovRegReg(a, src1Reg, dstReg);
@@ -1169,6 +1138,24 @@ void CodeGenerator::cgBinaryDblOp(IRInstruction* inst,
   (m_as.*fpInstr)(srcReg2, resReg);
 
   emitMovRegReg(m_as, resReg, dstReg);
+}
+
+void CodeGenerator::cgAddIntO(IRInstruction* inst) {
+  cgAddInt(inst);
+  assert(inst->taken() != nullptr);
+  emitFwdJcc(m_as, CC_O, inst->taken());
+}
+
+void CodeGenerator::cgSubIntO(IRInstruction* inst) {
+  cgSubInt(inst);
+  assert(inst->taken() != nullptr);
+  emitFwdJcc(m_as, CC_O, inst->taken());
+}
+
+void CodeGenerator::cgMulIntO(IRInstruction* inst) {
+  cgMulInt(inst);
+  assert(inst->taken() != nullptr);
+  emitFwdJcc(m_as, CC_O, inst->taken());
 }
 
 /*
@@ -1835,7 +1822,6 @@ void CodeGenerator::emitIsTypeTest(IRInstruction* inst, JmpFn doJcc) {
     return;
   }
   assert(src->isA(Type::Gen));
-  assert(!src->isConst());
 
   PhysReg typeSrcReg = loc.reg(1); // type register
   if (typeSrcReg == InvalidReg) {
@@ -2540,30 +2526,6 @@ void CodeGenerator::cgRetCtrl(IRInstruction* inst) {
     emitTraceRet(m_as);
   }
 
-  // VMEntry functions are likely to return to the callToExit stub.
-  // However, this is a forced return address, which doesn't match the
-  // address in the hardware return address stack.  To avoid the
-  // branch misprediction in the ret instruction, we turn it into a
-  // direct jcc to callToExit.  In case the function was called from
-  // another JITed function, the ret path is taken.
-  if (curFunc()->attrs() & AttrVMEntry) {
-    Label retLabel;
-    TCA callToExitStub = m_mcg->tx().uniqueStubs.callToExit;
-    m_as.movq(callToExitStub, m_rScratch);
-    m_as.cmpq(reg::rsp[0], m_rScratch);
-    m_as.jcc8(CC_NE, retLabel);
-    m_as.pop (m_rScratch);
-
-    // Task #3186286
-    // callToExit does a pop + indirect jump because it's normally
-    // reached from a ret.  However, in this code path we jump to
-    // callToExit, so we should be able do a ret here that is
-    // going to be predicted by the hardware return address stack.
-    // However, when we inlined the REQ_EXIT service request here and
-    // emitted a ret, the ret suffered branch mispredictions.
-    m_as.jmp (callToExitStub);
-    asm_label(m_as, retLabel);
-  }
   m_as.ret();
   if (RuntimeOption::EvalHHIRGenerateAsserts) {
     m_as.ud2();
@@ -2808,18 +2770,23 @@ void CodeGenerator::cgShuffle(IRInstruction* inst) {
       if (s1 != InvalidReg) moves[d1] = s1;
     }
   }
-  // Compute a serial order of moves and swaps
-  auto howTo = doRegMoves(moves, rCgGP);
+  // Compute a serial order of moves and swaps.  We can use m_rScratch
+  // here since cgShuffle is a standalone HHIR instruction, and sometimes
+  // its a low-numbered register.
+  auto rTmp = m_rScratch;
+  auto howTo = doRegMoves(moves, rTmp);
   for (auto& how : howTo) {
     if (how.m_kind == MoveInfo::Kind::Move) {
-      emitMovRegReg(m_as, how.m_reg1, how.m_reg2);
+      emitMovRegReg(m_as, how.m_src, how.m_dst);
     } else {
       // do swap - only support GPRs
-      assert(how.m_reg1.isGP() && how.m_reg2.isGP());
-      m_as.xchgq(how.m_reg1, how.m_reg2);
+      assert(how.m_src.isGP() && how.m_dst.isGP());
+      m_as.xchgq(how.m_src, how.m_dst);
     }
   }
-  // now do reg<-mem loads and reg<-imm moves
+  // now do reg<-mem loads and reg<-imm moves. We have already
+  // dealt with stores, moves, and swaps, so all rTmp is available
+  // even if it originally contained a value.
   for (uint32_t i = 0, n = inst->numSrcs(); i < n; ++i) {
     auto src = inst->src(i);
     auto rs = srcLoc(i);
@@ -2838,12 +2805,13 @@ void CodeGenerator::cgShuffle(IRInstruction* inst) {
       if (src->type().needsValueReg() ||
           RuntimeOption::EvalHHIRGenerateAsserts) {
         if (r.isGP()) {
+          // never needs scratch register
           m_as.emitImmReg(imm, r);
         } else {
           // load imm -> simd.  We could do this without a scratch
           // using a pc-relative load.
-          m_as.emitImmReg(imm, rCgGP);
-          emitMovRegReg(m_as, rCgGP, r);
+          m_as.emitImmReg(imm, rTmp);
+          emitMovRegReg(m_as, rTmp, r);
         }
       }
     }
@@ -3407,17 +3375,6 @@ void CodeGenerator::cgSpillFrame(IRInstruction* inst) {
                spOffset);
 }
 
-const Func* loadClassCtor(Class* cls) {
-  const Func* f = cls->getCtor();
-  if (UNLIKELY(!(f->attrs() & AttrPublic))) {
-    VMRegAnchor _;
-    UNUSED LookupResult res =
-      g_context->lookupCtorMethod(f, cls, true /*raise*/);
-    assert(res == LookupResult::MethodFoundWithThis);
-  }
-  return f;
-}
-
 void CodeGenerator::cgStClosureFunc(IRInstruction* inst) {
   auto const obj  = srcLoc(0).reg();
   auto const func = inst->extra<StClosureFunc>()->func;
@@ -3884,58 +3841,6 @@ void CodeGenerator::cgLdARFuncPtr(IRInstruction* inst) {
   m_as.loadq(baseReg[offset->intVal() + AROFF(m_func)], dstReg);
 }
 
-void CodeGenerator::cgLdRaw(IRInstruction* inst) {
-  PhysReg destReg = dstLoc(0).reg();
-  Reg64 addrReg = srcLoc(0).reg();
-  int64_t kind = inst->src(1)->intVal();
-
-  RawMemSlot& slot = RawMemSlot::Get(RawMemSlot::Kind(kind));
-  int ldSize = slot.size();
-  int64_t off = slot.offset();
-  if (ldSize == sz::qword) {
-    m_as.loadq (addrReg[off], destReg);
-  } else if (ldSize == sz::dword) {
-    m_as.loadl (addrReg[off], r32(destReg));
-  } else {
-    assert(ldSize == sz::byte);
-    m_as.loadzbl (addrReg[off], r32(destReg));
-  }
-}
-
-void CodeGenerator::cgStRaw(IRInstruction* inst) {
-  auto baseReg = srcLoc(0).reg();
-  int64_t kind = inst->src(1)->intVal();
-  SSATmp* value = inst->src(2);
-
-  RawMemSlot& slot = RawMemSlot::Get(RawMemSlot::Kind(kind));
-  assert(value->type() <= slot.type());
-  int stSize = slot.size();
-  int64_t off = slot.offset();
-  auto dest = baseReg[off];
-
-  auto valueReg = srcLoc(2).reg();
-  if (valueReg == InvalidReg) {
-    auto val = value->rawVal();
-    if (stSize == sz::qword) {
-      m_as.storeq(val, dest);
-    } else if (stSize == sz::dword) {
-      m_as.storel(val, dest);
-    } else {
-      assert(stSize == sz::byte);
-      m_as.storeb(val, dest);
-    }
-  } else {
-    if (stSize == sz::qword) {
-      m_as.storeq(r64(valueReg), dest);
-    } else if (stSize == sz::dword) {
-      m_as.storel(r32(valueReg), dest);
-    } else {
-      assert(stSize == sz::byte);
-      m_as.storeb(rbyte(valueReg), dest);
-    }
-  }
-}
-
 void CodeGenerator::cgLdStaticLocCached(IRInstruction* inst) {
   auto const extra = inst->extra<LdStaticLocCached>();
   auto const link  = RDS::bindStaticLocal(extra->func, extra->name);
@@ -4179,9 +4084,9 @@ void CodeGenerator::cgStringIsset(IRInstruction* inst) {
   auto idxReg = srcLoc(1).reg();
   auto dstReg = dstLoc(0).reg();
   if (idxReg == InvalidReg) {
-    m_as.cmpl(inst->src(1)->intVal(), strReg[StringData::sizeOffset()]);
+    m_as.cmpl(inst->src(1)->intVal(), strReg[StringData::sizeOff()]);
   } else {
-    m_as.cmpl(r32(idxReg), strReg[StringData::sizeOffset()]);
+    m_as.cmpl(r32(idxReg), strReg[StringData::sizeOff()]);
   }
   m_as.setnbe(rbyte(dstReg));
 }
@@ -5511,8 +5416,8 @@ void CodeGenerator::cgContEnter(IRInstruction* inst) {
 void CodeGenerator::cgContPreNext(IRInstruction* inst) {
   auto contReg = srcLoc(0).reg();
 
-  const Offset startedOffset = c_Continuation::startedOffset();
-  const Offset stateOffset = c_Continuation::stateOffset();
+  const Offset startedOffset = c_Continuation::startedOff();
+  const Offset stateOffset = c_Continuation::stateOff();
   // Check done and running at the same time
   m_as.testb(0x3, contReg[stateOffset]);
   emitFwdJcc(CC_NZ, inst->taken());
@@ -5524,7 +5429,7 @@ void CodeGenerator::cgContPreNext(IRInstruction* inst) {
 
 void CodeGenerator::cgContStartedCheck(IRInstruction* inst) {
   auto contReg = srcLoc(0).reg();
-  auto startedOffset = c_Continuation::startedOffset();
+  auto startedOffset = c_Continuation::startedOff();
 
   m_as.testb(0x1, contReg[startedOffset]);
   emitFwdJcc(CC_Z, inst->taken());
@@ -5534,7 +5439,7 @@ void CodeGenerator::cgContSetRunning(IRInstruction* inst) {
   auto contReg = srcLoc(0).reg();
   bool running = inst->src(1)->boolVal();
 
-  const Offset stateOffset = c_Continuation::stateOffset();
+  const Offset stateOffset = c_Continuation::stateOff();
   if (running) {
     m_as.storeb(0x1, contReg[stateOffset]);
   } else {
@@ -5546,7 +5451,7 @@ void CodeGenerator::cgContValid(IRInstruction* inst) {
   auto contReg = srcLoc(0).reg();
   auto destReg = dstLoc(0).reg();
 
-  m_as.loadzbl(contReg[c_Continuation::stateOffset()], r32(destReg));
+  m_as.loadzbl(contReg[c_Continuation::stateOff()], r32(destReg));
   m_as.shrl(0x1, r32(destReg));
   m_as.xorb(0x1, rbyte(destReg));
 }
@@ -5586,46 +5491,57 @@ void CodeGenerator::cgLdContActRec(IRInstruction* inst) {
   m_as.lea (base[offset], dest) ;
 }
 
-void CodeGenerator::cgLdContArRaw(IRInstruction* inst) {
-  auto destReg     = dstLoc(0).reg();
-  auto contArReg   = srcLoc(0).reg();
-  int64_t kind     = inst->src(1)->intVal();
-  RawMemSlot& slot = RawMemSlot::Get(RawMemSlot::Kind(kind));
+void CodeGenerator::emitLdRaw(IRInstruction* inst, size_t extraOff) {
+  auto destReg = dstLoc(0).reg();
+  auto offset  = inst->extra<RawMemData>()->info().offset;
+  auto src     = srcLoc(0).reg()[offset + extraOff];
 
-  int64_t off = slot.offset() - c_Continuation::getArOffset();
-  switch (slot.size()) {
-    case sz::byte:  m_as.loadzbl(contArReg[off], r32(destReg)); break;
-    case sz::dword: m_as.loadl(contArReg[off], r32(destReg)); break;
-    case sz::qword: m_as.loadq(contArReg[off], destReg); break;
+  switch (inst->extra<RawMemData>()->info().size) {
+    case sz::byte:  m_as.loadzbl(src, r32(destReg)); break;
+    case sz::dword: m_as.loadl(src, r32(destReg)); break;
+    case sz::qword: m_as.loadq(src, destReg); break;
     default:        not_implemented();
   }
 }
 
-void CodeGenerator::cgStContArRaw(IRInstruction* inst) {
-  auto contArReg   = srcLoc(0).reg();
-  int64_t kind     = inst->src(1)->intVal();
-  SSATmp* value    = inst->src(2);
-  auto valueReg = srcLoc(2).reg();
-  RawMemSlot& slot = RawMemSlot::Get(RawMemSlot::Kind(kind));
+void CodeGenerator::cgLdRaw(IRInstruction* inst) {
+  emitLdRaw(inst, 0);
+}
 
-  assert(value->type() <= slot.type());
-  int64_t off = slot.offset() - c_Continuation::getArOffset();
+void CodeGenerator::cgLdContArRaw(IRInstruction* inst) {
+  emitLdRaw(inst, -c_Continuation::getArOffset());
+}
 
-  if (value->isConst()) {
-    switch (slot.size()) {
-      case sz::byte:  m_as.storeb(value->rawVal(), contArReg[off]); break;
-      case sz::dword: m_as.storel(value->rawVal(), contArReg[off]); break;
-      case sz::qword: m_as.storeq(value->rawVal(), contArReg[off]); break;
+void CodeGenerator::emitStRaw(IRInstruction* inst, size_t extraOff) {
+  auto offset = inst->extra<RawMemData>()->info().offset;
+  auto dest   = srcLoc(0).reg()[offset + extraOff];
+  auto size   = inst->extra<RawMemData>()->info().size;
+
+  auto const valueReg = srcLoc(1).reg();
+  if (valueReg == InvalidReg) {
+    auto const val = inst->src(0)->rawVal();
+    switch (size) {
+      case sz::byte:  m_as.storeb(val, dest); break;
+      case sz::dword: m_as.storel(val, dest); break;
+      case sz::qword: m_as.storeq(val, dest); break;
       default:        not_implemented();
     }
   } else {
-    switch (slot.size()) {
-      case sz::byte:  m_as.storeb(rbyte(valueReg), contArReg[off]); break;
-      case sz::dword: m_as.storel(r32(valueReg), contArReg[off]); break;
-      case sz::qword: m_as.storeq(r64(valueReg), contArReg[off]); break;
+    switch (size) {
+      case sz::byte:  m_as.storeb(rbyte(valueReg), dest); break;
+      case sz::dword: m_as.storel(r32(valueReg), dest); break;
+      case sz::qword: m_as.storeq(r64(valueReg), dest); break;
       default:        not_implemented();
     }
   }
+}
+
+void CodeGenerator::cgStRaw(IRInstruction* inst) {
+  emitStRaw(inst, 0);
+}
+
+void CodeGenerator::cgStContArRaw(IRInstruction* inst) {
+  emitStRaw(inst, -c_Continuation::getArOffset());
 }
 
 void CodeGenerator::cgLdContArValue(IRInstruction* inst) {
@@ -5793,8 +5709,7 @@ void CodeGenerator::cgMIterInitCommon(IRInstruction* inst) {
     cgCallHelper(m_as, CppCall(new_miter_object), callDest(inst),
                  SyncOptions::kSyncPointAdjustOne, args);
   } else {
-    cgCallHelper(m_as, CppCall(new_miter_other), callDest(inst),
-                 SyncOptions::kSyncPoint, args);
+    CG_PUNT(MArrayIter-Unknown);
   }
 }
 
@@ -5856,12 +5771,11 @@ void CodeGenerator::cgMIterNextCommon(IRInstruction* inst) {
 
 void CodeGenerator::cgIterCopy(IRInstruction* inst) {
   auto fromReg = srcLoc(0).reg();
-  auto fromOffset = inst->src(1)->intVal();
-  auto toReg = srcLoc(2).reg();
-  auto toOffset = inst->src(3)->intVal();
+  auto toReg = srcLoc(1).reg();
+  auto offset = inst->src(2)->intVal();
   for (int i = 0; i < sizeof(Iter); i += 8) {
-    m_as.loadq(fromReg[-fromOffset+i], m_rScratch);
-    m_as.storeq(m_rScratch, toReg[-toOffset+i]);
+    m_as.loadq(fromReg[-offset+i], m_rScratch);
+    m_as.storeq(m_rScratch, toReg[-offset+i]);
   }
 }
 
@@ -6040,7 +5954,7 @@ void CodeGenerator::print() const {
   JIT::print(std::cout, m_unit, &m_state.regs, m_state.asmInfo);
 }
 
-static void patchJumps(CodeBlock& cb, CodegenState& state, Block* block) {
+void patchJumps(CodeBlock& cb, CodegenState& state, Block* block) {
   void* list = state.patches[block];
   Address labelAddr = cb.frontier();
   while (list) {
@@ -6054,168 +5968,4 @@ static void patchJumps(CodeBlock& cb, CodegenState& state, Block* block) {
   }
 }
 
-void CodeGenerator::cgBlock(Block* block, std::vector<TransBCMapping>* bcMap) {
-  FTRACE(6, "cgBlock: {}\n", block->id());
-
-  BCMarker prevMarker;
-  for (IRInstruction& instr : *block) {
-    IRInstruction* inst = &instr;
-    // If we're on the first instruction of the block or we have a new
-    // marker since the last instruction, update the bc mapping.
-    if ((!prevMarker.valid() || inst->marker() != prevMarker) &&
-        (m_mcg->tx().isTransDBEnabled() ||
-        RuntimeOption::EvalJitUseVtuneAPI) && bcMap) {
-      bcMap->push_back(TransBCMapping{inst->marker().func->unit()->md5(),
-                                      inst->marker().bcOff,
-                                      m_as.frontier(),
-                                      m_astubs.frontier()});
-      prevMarker = inst->marker();
-    }
-    auto* addr = cgInst(inst);
-    if (m_state.asmInfo && addr) {
-      m_state.asmInfo->updateForInstruction(inst, addr, m_as.frontier());
-    }
-  }
-}
-
-/*
- * Compute and save registers that are live *across* each inst, not including
- * registers whose lifetimes end at inst, nor registers defined by inst.
- */
-LiveRegs computeLiveRegs(const IRUnit& unit, const RegAllocInfo& regs) {
-  StateVector<Block, RegSet> liveMap(unit, RegSet());
-  LiveRegs live_regs(unit, RegSet());
-  postorderWalk(unit,
-    [&](Block* block) {
-      RegSet& live = liveMap[block];
-      if (Block* taken = block->taken()) live = liveMap[taken];
-      if (Block* next = block->next()) live |= liveMap[next];
-      for (auto it = block->end(); it != block->begin(); ) {
-        IRInstruction& inst = *--it;
-        live -= regs.dstRegs(inst);
-        live_regs[inst] = live;
-        live |= regs.srcRegs(inst);
-      }
-    });
-  return live_regs;
-}
-
-void genCodeImpl(CodeBlock& mainCode,
-                 CodeBlock& stubsCode,
-                 IRUnit& unit,
-                 std::vector<TransBCMapping>* bcMap,
-                 JIT::MCGenerator* mcg,
-                 const RegAllocInfo& regs,
-                 AsmInfo* asmInfo) {
-  LiveRegs live_regs = computeLiveRegs(unit, regs);
-  CodegenState state(unit, regs, live_regs, asmInfo);
-
-  // Returns: whether a block has already been emitted.
-  DEBUG_ONLY auto isEmitted = [&](Block* block) {
-    return state.addresses[block];
-  };
-
-  /*
-   * Emit the given block on the supplied assembler.  The `nextBlock'
-   * is the nextBlock that will be emitted on this assembler.  If is
-   * not the fallthrough block, emit a patchable jump to the
-   * fallthrough block.
-   */
-  auto emitBlock = [&](CodeBlock& cb, Block* block, Block* nextBlock) {
-    assert(!isEmitted(block));
-
-    FTRACE(6, "cgBlock {} on {}\n", block->id(),
-           cb.base() == stubsCode.base() ? "astubs" : "a");
-
-    auto const aStart      = cb.frontier();
-    auto const astubsStart = stubsCode.frontier();
-    switch (arch()) {
-      case Arch::X64:
-        patchJumps(cb, state, block);
-        break;
-      case Arch::ARM:
-        ARM::patchJumps(cb, state, block);
-        break;
-    }
-    state.addresses[block] = aStart;
-
-    // If the block ends with a Jmp and the next block is going to be
-    // its target, we don't need to actually emit it.
-    IRInstruction* last = &block->back();
-    state.noTerminalJmp = last->op() == Jmp && nextBlock == last->taken();
-
-    if (state.asmInfo) {
-      state.asmInfo->asmRanges[block] = TcaRange(aStart, cb.frontier());
-    }
-
-    switch (arch()) {
-      case Arch::X64: {
-        CodeGenerator cg(unit, cb, stubsCode, mcg, state);
-        cg.cgBlock(block, bcMap);
-        break;
-      }
-      case Arch::ARM: {
-        ARM::CodeGenerator cg(unit, cb, stubsCode, mcg, state);
-        cg.cgBlock(block, bcMap);
-        break;
-      }
-    }
-
-    if (auto next = block->next()) {
-      if (next != nextBlock) {
-        // If there's a fallthrough block and it's not the next thing
-        // going into this assembler, then emit a jump to it.
-        Asm a { cb };
-        emitFwdJmp(a, next, state);
-      }
-    }
-
-    if (state.asmInfo) {
-      state.asmInfo->asmRanges[block] = TcaRange(aStart, cb.frontier());
-      if (cb.base() != stubsCode.base()) {
-        state.asmInfo->astubRanges[block] = TcaRange(astubsStart,
-                                                     stubsCode.frontier());
-      }
-    }
-  };
-
-  if (RuntimeOption::EvalHHIRGenerateAsserts) {
-    emitTraceCall(mainCode, unit.bcOff());
-  }
-
-  auto const linfo = layoutBlocks(unit);
-
-  for (auto it = linfo.blocks.begin(); it != linfo.astubsIt; ++it) {
-    Block* nextBlock = boost::next(it) != linfo.astubsIt
-      ? *boost::next(it) : nullptr;
-    emitBlock(mainCode, *it, nextBlock);
-  }
-  for (auto it = linfo.astubsIt; it != linfo.blocks.end(); ++it) {
-    Block* nextBlock = boost::next(it) != linfo.blocks.end()
-      ? *boost::next(it) : nullptr;
-    emitBlock(stubsCode, *it, nextBlock);
-  }
-
-  if (debug) {
-    for (Block* UNUSED block : linfo.blocks) {
-      assert(isEmitted(block));
-    }
-  }
-}
-
-void genCode(CodeBlock& main, CodeBlock& stubs, IRUnit& unit,
-             std::vector<TransBCMapping>* bcMap,
-             JIT::MCGenerator* mcg,
-             const RegAllocInfo& regs) {
-  Timer _t("codeGen");
-
-  if (dumpIREnabled()) {
-    AsmInfo ai(unit);
-    genCodeImpl(main, stubs, unit, bcMap, mcg, regs, &ai);
-    dumpTrace(kCodeGenLevel, unit, " after code gen ", &regs, &ai);
-  } else {
-    genCodeImpl(main, stubs, unit, bcMap, mcg, regs, nullptr);
-  }
-}
-
-}}
+}}}

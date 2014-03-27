@@ -16,7 +16,14 @@
 #ifndef incl_HPHP_JIT_ARG_GROUP_H
 #define incl_HPHP_JIT_ARG_GROUP_H
 
+#include "hphp/runtime/base/smart-containers.h"
+#include "hphp/runtime/vm/jit/phys-loc.h"
+#include "hphp/runtime/vm/jit/reg-alloc.h"
+
 namespace HPHP { namespace JIT {
+
+class SSATmp;
+struct IRInstruction;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -166,12 +173,12 @@ struct ArgGroup {
     return *this;
   }
 
-  ArgGroup& vectorKeyIS(int i) {
-    return vectorKeyImpl(i, true);
+  ArgGroup& memberKeyIS(int i) {
+    return memberKeyImpl(i, true);
   }
 
-  ArgGroup& vectorKeyS(int i) {
-    return vectorKeyImpl(i, false);
+  ArgGroup& memberKeyS(int i) {
+    return memberKeyImpl(i, false);
   }
 
 private:
@@ -198,10 +205,10 @@ private:
     return *this;
   }
 
-  ArgGroup& vectorKeyImpl(int i, bool allowInt) {
+  ArgGroup& memberKeyImpl(int i, bool allowInt) {
     auto key = m_inst->src(i);
     if (key->isA(Type::Str) || (allowInt && key->isA(Type::Int))) {
-      return packed_tv ? none().ssa(i) : ssa(i).none();
+      return ssa(i);
     }
     return typedValue(i);
   }

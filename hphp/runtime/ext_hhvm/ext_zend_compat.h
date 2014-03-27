@@ -22,6 +22,7 @@
 #include "hphp/runtime/base/macros.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/ini-setting.h"
+#include "hphp/runtime/ext_zend_compat/hhvm/ZendExceptionStore.h"
 #include "hphp/runtime/ext_zend_compat/hhvm/ZendExecutionStack.h"
 #include "hphp/runtime/ext_zend_compat/hhvm/ZendObjectData.h"
 #include "hphp/runtime/ext_zend_compat/hhvm/zval-helpers.h"
@@ -67,17 +68,13 @@ inline TypedValue* zend_wrap_func(
   zPrepArgs(ar);
 
   // Using Variant so exceptions will decref them
-  Variant return_value_var(
-    RefData::Make(*init_null_variant.asTypedValue()),
-    Variant::noInc
-  );
-  TypedValue* return_value = return_value_var.asTypedValue();
+  Variant return_value_var(Variant::NullInit{});
+  auto const return_value = return_value_var.asTypedValue();
+  tvBox(return_value);
 
-  Variant this_ptr_var(
-    RefData::Make(*init_null_variant.asTypedValue()),
-    Variant::noInc
-  );
-  TypedValue* this_ptr = this_ptr_var.asTypedValue();
+  Variant this_ptr_var(Variant::NullInit{});
+  auto const this_ptr = this_ptr_var.asTypedValue();
+  tvBox(this_ptr);
 
   if (ar->hasThis()) {
     tvWriteObject(
@@ -88,16 +85,30 @@ inline TypedValue* zend_wrap_func(
 
   auto *return_value_ptr = &return_value->m_data.pref;
 
+  // Clear any stored exception
+  ZendExceptionStore& exceptionStore = ZendExceptionStore::getInstance();
+  exceptionStore.clear();
+
   // Invoke the PHP extension function/method
   ZendExecutionStack::pushHHVMStack();
-  builtin_func(
-    ar->numArgs(),
-    return_value->m_data.pref,
-    return_value_ptr,
-    this_ptr_var.isNull() ? nullptr : this_ptr->m_data.pref,
-    1
-  );
+  try {
+    builtin_func(
+      ar->numArgs(),
+      return_value->m_data.pref,
+      return_value_ptr,
+      this_ptr_var.isNull() ? nullptr : this_ptr->m_data.pref,
+      1
+    );
+  } catch (...) {
+    ZendExecutionStack::popHHVMStack();
+    throw;
+  }
   ZendExecutionStack::popHHVMStack();
+
+  // If an exception was caught, rethrow it
+  if (!exceptionStore.empty()) {
+    exceptionStore.rethrow();
+  }
 
   // Take care of freeing the args, tearing down the ActRec,
   // and moving the return value to the right place

@@ -289,6 +289,10 @@ static xmlNodePtr php_sxe_get_first_node(c_SimpleXMLElement* sxe,
   }
 }
 
+xmlNodePtr simplexml_export_node(c_SimpleXMLElement* sxe) {
+  return php_sxe_get_first_node(sxe, sxe->node);
+}
+
 static Variant cast_object(char* contents, int type) {
   String str = String((char*)contents);
   Variant obj;
@@ -1729,6 +1733,7 @@ struct LibXmlErrors final : RequestEventHandler {
   void requestInit() override {
     m_use_error = false;
     m_errors.reset();
+    xmlResetLastError();
     m_entity_loader_disabled = false;
     xmlParserInputBufferCreateFilenameDefault(hphp_libxml_input_buffer);
   }
